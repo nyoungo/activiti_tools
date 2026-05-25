@@ -26,20 +26,25 @@ jobs:
         run: |
           npm run build:win
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: activiti-tools-windows
-          path: build/activiti-tools.exe
-          retention-days: 30
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/activiti-tools.exe
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+      - name: Push to Releases Branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          $branchName = "releases"
+          
+          if (git ls-remote --heads origin $branchName) {
+              git fetch origin $branchName
+              git checkout -b $branchName origin/$branchName
+          } else {
+              git checkout --orphan $branchName
+              git rm -rf .
+          }
+          
+          Copy-Item -Path build/activiti-tools.exe -Destination . -Force
+          
+          git add activiti-tools.exe
+          git commit -m "Update release binary ${{ github.ref_name }}"
+          git push origin $branchName
