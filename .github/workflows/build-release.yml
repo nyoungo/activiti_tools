@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -26,21 +28,13 @@ jobs:
         run: |
           npm run build:win
 
-      - name: Create and Push Releases Branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $repoUrl = "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
-          mkdir temp-releases
-          cd temp-releases
-          
-          git init
-          Copy-Item -Path ../build/activiti-tools.exe -Destination . -Force
-          git add activiti-tools.exe
-          git commit -m "Update release binary ${{ github.ref_name }}"
-          git branch -M releases
-          git push -f $repoUrl releases
+      - name: Push to Releases Branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build
+          publish_branch: releases
+          user_name: "GitHub Actions"
+          user_email: "actions@github.com"
+          keep_files: false
+          allow_empty_commit: false
