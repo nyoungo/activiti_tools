@@ -189,6 +189,24 @@ app.get('/api/instances', async (req, res) => {
     }
 })
 
+app.get('/api/finished-instances', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const page = parseInt(req.query.page) || 1
+        const size = parseInt(req.query.size) || 10
+        const keyword = req.query.keyword || ''
+        const offset = (page - 1) * size
+        
+        const result = await getFinishedProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        res.json(result)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -303,6 +321,61 @@ app.post('/api/instances/:id/jump-to-task', async (req, res) => {
         const { taskId } = req.body
         await jumpToHistoryTask(activitiDb, dbConfig.dbType, req.params.id, taskId)
         res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/api/tasks/:taskId/set-assignee', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { assignee } = req.body
+        await setTaskAssignee(activitiDb, dbConfig.dbType, req.params.taskId, assignee)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/api/tasks/:taskId/add-identitylink', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { userId, type } = req.body
+        await addTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.delete('/api/tasks/:taskId/identitylink', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { userId, type } = req.body || {}
+        await deleteTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.get('/api/tasks/:taskId/identitylinks', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const identitylinks = await getTaskIdentityLinks(activitiDb, dbConfig.dbType, req.params.taskId)
+        res.json(identitylinks)
     } catch (error) {
         res.status(500).json({ error: error.message })
     }
@@ -455,6 +528,7 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     }
     
     for (const inst of instances) {
+        inst.isFinished = false
         let taskSql = `
             SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
             FROM ACT_RU_TASK
@@ -494,6 +568,8 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
     `
     
     let instance
+    let isFinished = false
+    
     if (dbType === 'mysql') {
         const [rows] = await db.execute(sql, [instanceId])
         instance = rows[0]
@@ -503,7 +579,41 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         instance = result.rows[0]
     }
     
+    if (!instance) {
+        let historySql = `
+            SELECT 
+                h.ID_ as id,
+                h.PROC_DEF_ID_ as procDefId,
+                pd.NAME_ as procDefName,
+                pd.KEY_ as procDefKey,
+                h.START_TIME_ as startTime,
+                h.START_USER_ID_ as startUserId,
+                h.BUSINESS_KEY_ as businessKey,
+                h.END_TIME_ as endTime,
+                su.username as startUserName,
+                su.realname as startUserRealname
+            FROM ACT_HI_PROCINST h
+            LEFT JOIN ACT_RE_PROCDEF pd ON h.PROC_DEF_ID_ = pd.ID_
+            LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id
+            WHERE h.ID_ = ?
+        `
+        if (dbType === 'mysql') {
+            const [rows] = await db.execute(historySql, [instanceId])
+            instance = rows[0]
+        } else {
+            historySql = historySql.replace(/\?/, '$1')
+            const result = await db.query(historySql, [instanceId])
+            instance = result.rows[0]
+        }
+        
+        if (instance) {
+            isFinished = true
+        }
+    }
+    
     if (instance) {
+        instance.isFinished = isFinished
+        
         let taskSql = `
             SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
             FROM ACT_RU_TASK
@@ -522,6 +632,77 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
     }
     
     return instance
+}
+
+async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
+    let sql = `
+        SELECT 
+            h.ID_ as id,
+            h.PROC_DEF_ID_ as procDefId,
+            pd.NAME_ as procDefName,
+            pd.KEY_ as procDefKey,
+            h.START_TIME_ as startTime,
+            h.END_TIME_ as endTime,
+            h.START_USER_ID_ as startUserId,
+            h.BUSINESS_KEY_ as businessKey,
+            su.username as startUserName,
+            su.realname as startUserRealname
+        FROM ACT_HI_PROCINST h
+        LEFT JOIN ACT_RE_PROCDEF pd ON h.PROC_DEF_ID_ = pd.ID_
+        LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id
+        WHERE h.END_TIME_ IS NOT NULL
+    `
+    const params = []
+    
+    if (keyword) {
+        const kw = `%${keyword}%`
+        if (dbType === 'mysql') {
+            sql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR h.BUSINESS_KEY_ LIKE ?)'
+            params.push(kw, kw, kw)
+        } else {
+            sql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR h.BUSINESS_KEY_ ILIKE $1)'
+            params.push(kw)
+        }
+    }
+    
+    sql += ' ORDER BY h.END_TIME_ DESC'
+    
+    let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
+    if (countSql.includes('ORDER BY')) {
+        countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
+    }
+    
+    let total
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(countSql, params)
+        total = rows[0]?.total || 0
+    } else {
+        const result = await db.query(countSql, params)
+        total = parseInt(result.rows[0]?.total || 0)
+    }
+    
+    if (dbType === 'mysql') {
+        sql += ' LIMIT ? OFFSET ?'
+        params.push(size, offset)
+    } else {
+        sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+        params.push(size, offset)
+    }
+    
+    let instances
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, params)
+        instances = rows
+    } else {
+        const result = await db.query(sql, params)
+        instances = result.rows
+    }
+    
+    for (const inst of instances) {
+        inst.isFinished = true
+    }
+    
+    return { instances, total }
 }
 
 async function getProcessVariables(db, dbType, instanceId) {
@@ -786,6 +967,83 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
             ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
         `
         await db.query(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+    }
+}
+
+async function setTaskAssignee(db, dbType, taskId, assignee) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = 'UPDATE ACT_RU_TASK SET ASSIGNEE_ = ?, REV_ = REV_ + 1 WHERE ID_ = ?'
+        await db.execute(sql, [assignee, taskId])
+    } else {
+        sql = 'UPDATE ACT_RU_TASK SET ASSIGNEE_ = $1, REV_ = REV_ + 1 WHERE ID_ = $2'
+        await db.query(sql, [assignee, taskId])
+    }
+}
+
+async function addTaskIdentityLink(db, dbType, taskId, userId, type) {
+    const id = `${taskId}-${userId}-${type}`
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
+            VALUES (?, 1, ?, ?, NULL, ?, NULL, NULL)
+        `
+        await db.execute(sql, [id, type, userId, taskId])
+    } else {
+        sql = `
+            INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
+            VALUES ($1, 1, $2, $3, NULL, $4, NULL, NULL)
+        `
+        await db.query(sql, [id, type, userId, taskId])
+    }
+}
+
+async function deleteTaskIdentityLink(db, dbType, taskId, userId, type) {
+    let sql
+    if (dbType === 'mysql') {
+        if (userId && type) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ? AND USER_ID_ = ? AND TYPE_ = ?'
+            await db.execute(sql, [taskId, userId, type])
+        } else if (userId) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ? AND USER_ID_ = ?'
+            await db.execute(sql, [taskId, userId])
+        } else {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ?'
+            await db.execute(sql, [taskId])
+        }
+    } else {
+        if (userId && type) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1 AND USER_ID_ = $2 AND TYPE_ = $3'
+            await db.query(sql, [taskId, userId, type])
+        } else if (userId) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1 AND USER_ID_ = $2'
+            await db.query(sql, [taskId, userId])
+        } else {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1'
+            await db.query(sql, [taskId])
+        }
+    }
+}
+
+async function getTaskIdentityLinks(db, dbType, taskId) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
+            FROM ACT_RU_IDENTITYLINK
+            WHERE TASK_ID_ = ?
+        `
+        const [rows] = await db.execute(sql, [taskId])
+        return rows
+    } else {
+        sql = `
+            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
+            FROM ACT_RU_IDENTITYLINK
+            WHERE TASK_ID_ = $1
+        `
+        const result = await db.query(sql, [taskId])
+        return result.rows
     }
 }
 

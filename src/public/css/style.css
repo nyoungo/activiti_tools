@@ -272,6 +272,60 @@ body {
     color: #999 !important;
 }
 
+/* 标签页 */
+.tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.tab-btn {
+    padding: 12px 24px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #666;
+    transition: all 0.2s;
+}
+
+.tab-btn:hover {
+    color: #3498db;
+}
+
+.tab-btn.active {
+    color: #3498db;
+    border-bottom-color: #3498db;
+}
+
+/* 状态标签 */
+.status-tag {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.status-running {
+    background: #e3f2fd;
+    color: #1976d2;
+}
+
+.status-finished {
+    background: #f5f5f5;
+    color: #666;
+}
+
+.status-suspended {
+    background: #fff3e0;
+    color: #f57c00;
+}
+
 /* 分页 */
 .pagination {
     display: flex;

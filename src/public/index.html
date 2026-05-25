@@ -12,10 +12,7 @@
         <aside class="sidebar">
             <h1>Activiti Tools</h1>
             <nav>
-                <button class="nav-item active" data-page="connection">
-                    <span>🔗</span> 数据库连接
-                </button>
-                <button class="nav-item" data-page="instances">
+                <button class="nav-item active" data-page="instances">
                     <span>📋</span> 流程实例
                 </button>
                 <button class="nav-item" data-page="definitions">
@@ -25,12 +22,13 @@
             <div class="connection-status" id="connectionStatus">
                 <span class="status-dot"></span>
                 <span id="statusText">未连接</span>
+                <button id="disconnect" class="btn btn-small btn-danger" style="display:none; margin-top: 10px;">断开连接</button>
             </div>
         </aside>
 
         <!-- 主内容区 -->
         <main class="main-content">
-            <!-- 数据库连接页面 -->
+            <!-- 数据库连接页面（初始页面） -->
             <section id="page-connection" class="page active">
                 <div class="page-header">
                     <h2>数据库连接</h2>
@@ -86,7 +84,6 @@
                             <button id="testConnection" class="btn btn-secondary">测试连接</button>
                             <button id="saveConnection" class="btn btn-secondary">保存配置</button>
                             <button id="connect" class="btn btn-primary">连接</button>
-                            <button id="disconnect" class="btn btn-danger" style="display:none;">断开</button>
                         </div>
                         <div id="connectionMessage" class="message"></div>
                     </div>
@@ -96,27 +93,34 @@
             <!-- 流程实例页面 -->
             <section id="page-instances" class="page">
                 <div class="page-header">
-                    <h2>流程实例</h2>
+                    <h2>流程实例管理</h2>
                     <div class="search-box">
                         <input type="text" id="searchKeyword" placeholder="搜索流程名称、Key或业务Key...">
                         <button id="searchBtn" class="btn btn-primary">搜索</button>
                     </div>
                 </div>
+
+                <!-- 流程实例标签页 -->
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="running">运行中</button>
+                    <button class="tab-btn" data-tab="finished">已结束</button>
+                </div>
+
                 <div class="content-box">
                     <table class="data-table">
                         <thead>
                             <tr>
                                 <th>实例ID</th>
                                 <th>流程名称</th>
-                                <th>流程Key</th>
                                 <th>业务Key</th>
+                                <th>发起人</th>
                                 <th>开始时间</th>
-                                <th>当前任务</th>
+                                <th>状态</th>
                                 <th>操作</th>
                             </tr>
                         </thead>
                         <tbody id="instancesTableBody">
-                            <tr><td colspan="7" class="text-center">请先连接数据库</td></tr>
+                            <tr><td colspan="7" class="text-center">请连接数据库</td></tr>
                         </tbody>
                     </table>
                     <div class="pagination" id="pagination"></div>
@@ -126,7 +130,7 @@
             <!-- 流程定义页面 -->
             <section id="page-definitions" class="page">
                 <div class="page-header">
-                    <h2>流程定义</h2>
+                    <h2>流程定义管理</h2>
                 </div>
                 <div class="content-box">
                     <table class="data-table">
@@ -140,7 +144,7 @@
                             </tr>
                         </thead>
                         <tbody id="definitionsTableBody">
-                            <tr><td colspan="5" class="text-center">请先连接数据库</td></tr>
+                            <tr><td colspan="5" class="text-center">暂无数据</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -148,12 +152,12 @@
         </main>
     </div>
 
-    <!-- 流程详情模态框 -->
+    <!-- 流程实例详情模态框 -->
     <div id="instanceModal" class="modal">
-        <div class="modal-content modal-large">
+        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
             <div class="modal-header">
                 <h3>流程实例详情</h3>
-                <button class="modal-close">&times;</button>
+                <button class="modal-close" onclick="closeInstanceModal()">&times;</button>
             </div>
             <div class="modal-body" id="instanceModalBody"></div>
         </div>
@@ -161,13 +165,97 @@
 
     <!-- 流程定义XML模态框 -->
     <div id="xmlModal" class="modal">
-        <div class="modal-content modal-large">
+        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
             <div class="modal-header">
                 <h3>流程定义 XML</h3>
                 <button class="modal-close">&times;</button>
             </div>
             <div class="modal-body">
-                <textarea id="xmlContent" readonly></textarea>
+                <textarea id="xmlContent" readonly style="min-height: 500px;"></textarea>
+                <div id="xmlActions" style="margin-top: 12px; display: none;">
+                    <button class="btn btn-primary" onclick="saveXml()">保存修改</button>
+                    <button class="btn btn-secondary" onclick="resetXml()">重置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置审批人模态框 -->
+    <div id="assigneeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>任务审批人设置</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>任务ID</label>
+                    <input type="text" id="assigneeTaskId" readonly>
+                </div>
+                <div class="form-group">
+                    <label>任务名称</label>
+                    <input type="text" id="assigneeTaskName" readonly>
+                </div>
+                <div class="form-group">
+                    <label>当前审批人</label>
+                    <input type="text" id="currentAssignee" readonly>
+                </div>
+                <div class="form-group">
+                    <label>设置审批人</label>
+                    <input type="text" id="newAssignee" placeholder="输入用户ID">
+                    <small>设置单个审批人，将替换当前审批人</small>
+                </div>
+                <div class="form-group">
+                    <label>添加候选人</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="candidateUserId" placeholder="输入用户ID" style="flex: 1;">
+                        <select id="candidateType">
+                            <option value="candidate">候选人</option>
+                            <option value="assignee">审批人</option>
+                        </select>
+                        <button class="btn btn-small btn-secondary" onclick="addCandidate()">添加</button>
+                    </div>
+                    <small>添加多审批人（IdentityLink）</small>
+                </div>
+                <div class="form-group">
+                    <label>当前候选人/审批人</label>
+                    <div id="identityLinkList" style="max-height: 200px; overflow-y: auto;"></div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
+                    <button class="btn btn-secondary" onclick="refreshTaskInfo()">刷新</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 退回任务节点模态框 -->
+    <div id="returnTaskModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>退回任务节点</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>当前任务</label>
+                    <input type="text" id="returnCurrentTask" readonly>
+                </div>
+                <div class="form-group">
+                    <label>退回节点</label>
+                    <select id="returnTargetTask" class="form-control">
+                        <option value="">-- 选择退回节点 --</option>
+                    </select>
+                    <small>选择要退回到的历史节点</small>
+                </div>
+                <div class="form-group">
+                    <label>退回原因</label>
+                    <textarea id="returnReason" placeholder="输入退回原因（可选）" style="width: 100%; min-height: 80px;"></textarea>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-danger" onclick="confirmReturnTask()">确认退回</button>
+                    <button class="btn btn-secondary" onclick="closeReturnTaskModal()">取消</button>
+                </div>
             </div>
         </div>
     </div>
