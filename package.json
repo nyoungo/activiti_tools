@@ -10,7 +10,7 @@
     },
     "dependencies": {
         "express": "^4.18.2",
-        "better-sqlite3": "^9.4.3",
+        "sql.js": "^1.10.3",
         "mysql2": "^3.9.2",
         "pg": "^8.11.3",
         "open": "^10.0.3",
@@ -21,7 +21,8 @@
     },
     "pkg": {
         "assets": [
-            "src/public/**/*"
+            "src/public/**/*",
+            "node_modules/sql.js/dist/sql-wasm.wasm"
         ],
         "targets": [
             "node18-win-x64"

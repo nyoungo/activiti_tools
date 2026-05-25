@@ -1,510 +1,598 @@
 const express = require('express')
 const path = require('path')
-const open = require('open')
+const fs = require('fs')
+const { exec } = require('child_process')
 const cors = require('cors')
-const Database = require('better-sqlite3')
 const mysql = require('mysql2/promise')
 const { Pool } = require('pg')
+const initSqlJs = require('sql.js')
 
 const app = express()
 const PORT = 34567
+const CONFIG_DB_PATH = path.join(__dirname, '..', 'config.db')
 
-// 中间件
+let activitiDb = null
+let dbConfig = null
+let localDb = null
+
 app.use(cors())
 app.use(express.json())
 app.use(express.static(path.join(__dirname, 'public')))
 
-// 全局状态
-let activitiDb = null
-let dbConfig = null
+async function initLocalDb() {
+    const SQL = await initSqlJs()
+    
+    if (fs.existsSync(CONFIG_DB_PATH)) {
+        const fileBuffer = fs.readFileSync(CONFIG_DB_PATH)
+        localDb = new SQL.Database(fileBuffer)
+    } else {
+        localDb = new SQL.Database()
+    }
+    
+    localDb.run(`
+        CREATE TABLE IF NOT EXISTS connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            db_type TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            database TEXT NOT NULL,
+            username TEXT NOT NULL,
+            password TEXT
+        )
+    `)
+    saveLocalDb()
+}
 
-// 初始化本地SQLite（存储连接配置）
-const localDb = new Database(path.join(__dirname, '..', 'config.db'))
-localDb.exec(`
-  CREATE TABLE IF NOT EXISTS connections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    db_type TEXT NOT NULL,
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL,
-    database TEXT NOT NULL,
-    username TEXT NOT NULL,
-    password TEXT
-  )
-`)
+function saveLocalDb() {
+    const data = localDb.export()
+    const buffer = Buffer.from(data)
+    fs.writeFileSync(CONFIG_DB_PATH, buffer)
+}
+
+function openBrowser(url) {
+    if (process.platform === 'win32') {
+        exec(`start ${url}`)
+    } else if (process.platform === 'darwin') {
+        exec(`open ${url}`)
+    } else {
+        exec(`xdg-open ${url}`)
+    }
+}
 
 // ========== API路由 ==========
 
-// 测试数据库连接
 app.post('/api/test-connection', async (req, res) => {
-  const config = req.body
-  try {
-    await testConnection(config)
-    res.json({ success: true, message: '连接成功！' })
-  } catch (error) {
-    res.json({ success: false, message: error.message })
-  }
-})
-
-// 保存连接配置
-app.post('/api/save-connection', (req, res) => {
-  const config = req.body
-  const stmt = localDb.prepare(`
-    INSERT INTO connections (name, db_type, host, port, database, username, password)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
-  const result = stmt.run(config.name, config.dbType, config.host, config.port, config.database, config.username, config.password)
-  res.json({ success: true, id: result.lastInsertRowid })
-})
-
-// 获取保存的连接列表
-app.get('/api/connections', (req, res) => {
-  const stmt = localDb.prepare('SELECT id, name, db_type, host, port, database, username FROM connections')
-  const connections = stmt.all()
-  res.json(connections)
-})
-
-// 删除连接配置
-app.delete('/api/connections/:id', (req, res) => {
-  const stmt = localDb.prepare('DELETE FROM connections WHERE id = ?')
-  stmt.run(req.params.id)
-  res.json({ success: true })
-})
-
-// 连接到Activiti数据库
-app.post('/api/connect', async (req, res) => {
-  const config = req.body
-  try {
-    await testConnection(config)
-    dbConfig = config
-    activitiDb = await createConnection(config)
-    res.json({ success: true, message: '已连接到数据库！' })
-  } catch (error) {
-    res.json({ success: false, message: error.message })
-  }
-})
-
-// 断开连接
-app.post('/api/disconnect', (req, res) => {
-  if (activitiDb) {
-    if (dbConfig.dbType === 'postgres') {
-      activitiDb.end()
-    } else {
-      activitiDb.end()
+    const config = req.body
+    try {
+        await testConnection(config)
+        res.json({ success: true, message: '连接成功！' })
+    } catch (error) {
+        res.json({ success: false, message: error.message })
     }
-  }
-  activitiDb = null
-  dbConfig = null
-  res.json({ success: true })
 })
 
-// 检查连接状态
-app.get('/api/connection-status', (req, res) => {
-  res.json({ connected: !!activitiDb, config: dbConfig ? { ...dbConfig, password: undefined } : null })
-})
-
-// 获取流程实例列表
-app.get('/api/instances', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const page = parseInt(req.query.page) || 1
-    const size = parseInt(req.query.size) || 10
-    const keyword = req.query.keyword || ''
-    const offset = (page - 1) * size
+app.post('/api/save-connection', (req, res) => {
+    const config = req.body
+    localDb.run(`
+        INSERT INTO connections (name, db_type, host, port, database, username, password)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [config.name, config.dbType, config.host, config.port, config.database, config.username, config.password])
+    saveLocalDb()
     
-    const result = await getProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
-    res.json(result)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    const result = localDb.exec('SELECT last_insert_rowid() as id')
+    const id = result[0]?.values[0]?.[0] || 0
+    res.json({ success: true, id })
 })
 
-// 获取流程实例详情
+app.get('/api/connections', (req, res) => {
+    const result = localDb.exec('SELECT id, name, db_type, host, port, database, username FROM connections')
+    const connections = result.length > 0 ? result[0].values.map(row => ({
+        id: row[0], name: row[1], db_type: row[2], host: row[3], port: row[4], database: row[5], username: row[6]
+    })) : []
+    res.json(connections)
+})
+
+app.delete('/api/connections/:id', (req, res) => {
+    localDb.run('DELETE FROM connections WHERE id = ?', [parseInt(req.params.id)])
+    saveLocalDb()
+    res.json({ success: true })
+})
+
+app.post('/api/connect', async (req, res) => {
+    const config = req.body
+    try {
+        await testConnection(config)
+        dbConfig = config
+        activitiDb = await createConnection(config)
+        res.json({ success: true, message: '已连接到数据库！' })
+    } catch (error) {
+        res.json({ success: false, message: error.message })
+    }
+})
+
+app.post('/api/disconnect', (req, res) => {
+    if (activitiDb) {
+        if (dbConfig?.dbType === 'postgres') {
+            activitiDb.end()
+        } else {
+            activitiDb.end()
+        }
+    }
+    activitiDb = null
+    dbConfig = null
+    res.json({ success: true })
+})
+
+app.get('/api/connection-status', (req, res) => {
+    res.json({ connected: !!activitiDb, config: dbConfig ? { ...dbConfig, password: undefined } : null })
+})
+
+app.get('/api/instances', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const page = parseInt(req.query.page) || 1
+        const size = parseInt(req.query.size) || 10
+        const keyword = req.query.keyword || ''
+        const offset = (page - 1) * size
+        
+        const result = await getProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        res.json(result)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const instance = await getProcessInstanceDetail(activitiDb, dbConfig.dbType, req.params.id)
-    res.json(instance)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const instance = await getProcessInstanceDetail(activitiDb, dbConfig.dbType, req.params.id)
+        res.json(instance)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 获取流程变量
 app.get('/api/instances/:id/variables', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const variables = await getProcessVariables(activitiDb, dbConfig.dbType, req.params.id)
-    res.json(variables)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const variables = await getProcessVariables(activitiDb, dbConfig.dbType, req.params.id)
+        res.json(variables)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 设置流程变量
 app.post('/api/instances/:id/variables', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    await setProcessVariable(activitiDb, dbConfig.dbType, req.params.id, req.body)
-    res.json({ success: true })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        await setProcessVariable(activitiDb, dbConfig.dbType, req.params.id, req.body)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 删除流程变量
 app.delete('/api/instances/:id/variables/:name', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    await deleteProcessVariable(activitiDb, dbConfig.dbType, req.params.id, req.params.name)
-    res.json({ success: true })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        await deleteProcessVariable(activitiDb, dbConfig.dbType, req.params.id, req.params.name)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 获取流程定义列表
 app.get('/api/definitions', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const definitions = await getProcessDefinitions(activitiDb, dbConfig.dbType)
-    res.json(definitions)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const definitions = await getProcessDefinitions(activitiDb, dbConfig.dbType)
+        res.json(definitions)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 获取流程定义XML
 app.get('/api/definitions/:id/xml', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const xml = await getProcessDefinitionXml(activitiDb, dbConfig.dbType, req.params.id)
-    res.json({ xml })
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const xml = await getProcessDefinitionXml(activitiDb, dbConfig.dbType, req.params.id)
+        res.json({ xml })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
-// 获取历史任务
 app.get('/api/instances/:id/history-tasks', async (req, res) => {
-  if (!activitiDb) {
-    return res.status(400).json({ error: '未连接到数据库' })
-  }
-  
-  try {
-    const tasks = await getHistoryTasks(activitiDb, dbConfig.dbType, req.params.id)
-    res.json(tasks)
-  } catch (error) {
-    res.status(500).json({ error: error.message })
-  }
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const tasks = await getHistoryTasks(activitiDb, dbConfig.dbType, req.params.id)
+        res.json(tasks)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
 // ========== 数据库操作函数 ==========
 
 async function testConnection(config) {
-  let conn
-  try {
-    if (config.dbType === 'mysql') {
-      conn = await mysql.createConnection({
-        host: config.host,
-        port: config.port,
-        user: config.username,
-        password: config.password,
-        database: config.database
-      })
-      await conn.ping()
-    } else if (config.dbType === 'postgres') {
-      conn = new Pool({
-        host: config.host,
-        port: config.port,
-        user: config.username,
-        password: config.password,
-        database: config.database
-      })
-      await conn.query('SELECT 1')
+    let conn
+    try {
+        if (config.dbType === 'mysql') {
+            conn = await mysql.createConnection({
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: config.database
+            })
+            await conn.ping()
+        } else if (config.dbType === 'postgres') {
+            conn = new Pool({
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: config.database
+            })
+            await conn.query('SELECT 1')
+        }
+    } finally {
+        if (conn) {
+            if (config.dbType === 'mysql') await conn.end()
+            else if (config.dbType === 'postgres') await conn.end()
+        }
     }
-  } finally {
-    if (conn) {
-      if (config.dbType === 'mysql') await conn.end()
-      else if (config.dbType === 'postgres') await conn.end()
-    }
-  }
 }
 
 async function createConnection(config) {
-  if (config.dbType === 'mysql') {
-    return await mysql.createConnection({
-      host: config.host,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      database: config.database
-    })
-  } else if (config.dbType === 'postgres') {
-    return new Pool({
-      host: config.host,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      database: config.database
-    })
-  }
+    if (config.dbType === 'mysql') {
+        return await mysql.createConnection({
+            host: config.host,
+            port: config.port,
+            user: config.username,
+            password: config.password,
+            database: config.database
+        })
+    } else if (config.dbType === 'postgres') {
+        return new Pool({
+            host: config.host,
+            port: config.port,
+            user: config.username,
+            password: config.password,
+            database: config.database
+        })
+    }
 }
 
 async function query(db, dbType, sql, params = []) {
-  if (dbType === 'mysql') {
-    const [rows] = await db.execute(sql, params)
-    return rows
-  } else if (dbType === 'postgres') {
-    const result = await db.query(sql, params)
-    return result.rows
-  }
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, params)
+        return rows
+    } else if (dbType === 'postgres') {
+        const result = await db.query(sql, params)
+        return result.rows
+    }
 }
 
 async function getProcessInstances(db, dbType, offset, size, keyword) {
-  let sql = `
-    SELECT 
-      e.ID_ as id,
-      e.PROC_DEF_ID_ as procDefId,
-      pd.NAME_ as procDefName,
-      pd.KEY_ as procDefKey,
-      e.START_TIME_ as startTime,
-      e.START_USER_ID_ as startUserId,
-      e.BUSINESS_KEY_ as businessKey
-    FROM ACT_RU_EXECUTION e
-    LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
-    WHERE e.PARENT_ID_ IS NULL
-  `
-  const params = []
-  
-  if (keyword) {
-    if (dbType === 'mysql') {
-      sql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR e.BUSINESS_KEY_ LIKE ?)'
-    } else {
-      sql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR e.BUSINESS_KEY_ ILIKE $1)'
-    }
-    const kw = `%${keyword}%`
-    params.push(kw, kw, kw)
-  }
-  
-  sql += ' ORDER BY e.START_TIME_ DESC'
-  
-  // 计数
-  let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
-  if (countSql.includes('ORDER BY')) {
-    countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
-  }
-  const countResult = await query(db, dbType, countSql, params)
-  const total = dbType === 'mysql' ? countResult[0].total : parseInt(countResult[0].total)
-  
-  // 分页
-  if (dbType === 'mysql') {
-    sql += ' LIMIT ? OFFSET ?'
-    params.push(size, offset)
-  } else {
-    sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
-    params.push(size, offset)
-  }
-  
-  const instances = await query(db, dbType, sql, params)
-  
-  // 获取当前任务
-  for (const inst of instances) {
-    const taskSql = `
-      SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-      FROM ACT_RU_TASK
-      WHERE PROC_INST_ID_ = ?
+    let sql = `
+        SELECT 
+            e.ID_ as id,
+            e.PROC_DEF_ID_ as procDefId,
+            pd.NAME_ as procDefName,
+            pd.KEY_ as procDefKey,
+            e.START_TIME_ as startTime,
+            e.START_USER_ID_ as startUserId,
+            e.BUSINESS_KEY_ as businessKey
+        FROM ACT_RU_EXECUTION e
+        LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
+        WHERE e.PARENT_ID_ IS NULL
     `
-    const taskParams = dbType === 'mysql' ? [inst.id] : [`$1`, inst.id]
-    const finalSql = dbType === 'postgres' ? taskSql.replace(/\?/, '$1') : taskSql
-    inst.currentTasks = await query(db, dbType, finalSql, [inst.id])
-  }
-  
-  return { instances, total }
+    const params = []
+    
+    if (keyword) {
+        const kw = `%${keyword}%`
+        if (dbType === 'mysql') {
+            sql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR e.BUSINESS_KEY_ LIKE ?)'
+            params.push(kw, kw, kw)
+        } else {
+            sql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR e.BUSINESS_KEY_ ILIKE $1)'
+            params.push(kw)
+        }
+    }
+    
+    sql += ' ORDER BY e.START_TIME_ DESC'
+    
+    let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
+    if (countSql.includes('ORDER BY')) {
+        countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
+    }
+    
+    let total
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(countSql, params)
+        total = rows[0]?.total || 0
+    } else {
+        const result = await db.query(countSql, params)
+        total = parseInt(result.rows[0]?.total || 0)
+    }
+    
+    if (dbType === 'mysql') {
+        sql += ' LIMIT ? OFFSET ?'
+        params.push(size, offset)
+    } else {
+        sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+        params.push(size, offset)
+    }
+    
+    let instances
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, params)
+        instances = rows
+    } else {
+        const result = await db.query(sql, params)
+        instances = result.rows
+    }
+    
+    for (const inst of instances) {
+        let taskSql = `
+            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
+            FROM ACT_RU_TASK
+            WHERE PROC_INST_ID_ = ?
+        `
+        if (dbType === 'postgres') {
+            taskSql = taskSql.replace(/\?/, '$1')
+        }
+        if (dbType === 'mysql') {
+            const [rows] = await db.execute(taskSql, [inst.id])
+            inst.currentTasks = rows
+        } else {
+            const result = await db.query(taskSql, [inst.id])
+            inst.currentTasks = result.rows
+        }
+    }
+    
+    return { instances, total }
 }
 
 async function getProcessInstanceDetail(db, dbType, instanceId) {
-  const sql = `
-    SELECT 
-      e.ID_ as id,
-      e.PROC_DEF_ID_ as procDefId,
-      pd.NAME_ as procDefName,
-      pd.KEY_ as procDefKey,
-      e.START_TIME_ as startTime,
-      e.START_USER_ID_ as startUserId,
-      e.BUSINESS_KEY_ as businessKey
-    FROM ACT_RU_EXECUTION e
-    LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
-    WHERE e.ID_ = ? AND e.PARENT_ID_ IS NULL
-  `
-  const finalSql = dbType === 'postgres' ? sql.replace(/\?/, '$1') : sql
-  const rows = await query(db, dbType, finalSql, [instanceId])
-  const instance = rows[0]
-  
-  if (instance) {
-    const taskSql = `
-      SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-      FROM ACT_RU_TASK
-      WHERE PROC_INST_ID_ = ?
+    let sql = `
+        SELECT 
+            e.ID_ as id,
+            e.PROC_DEF_ID_ as procDefId,
+            pd.NAME_ as procDefName,
+            pd.KEY_ as procDefKey,
+            e.START_TIME_ as startTime,
+            e.START_USER_ID_ as startUserId,
+            e.BUSINESS_KEY_ as businessKey
+        FROM ACT_RU_EXECUTION e
+        LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
+        WHERE e.ID_ = ? AND e.PARENT_ID_ IS NULL
     `
-    const finalTaskSql = dbType === 'postgres' ? taskSql.replace(/\?/, '$1') : taskSql
-    instance.currentTasks = await query(db, dbType, finalTaskSql, [instanceId])
-  }
-  
-  return instance
+    
+    let instance
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, [instanceId])
+        instance = rows[0]
+    } else {
+        sql = sql.replace(/\?/, '$1')
+        const result = await db.query(sql, [instanceId])
+        instance = result.rows[0]
+    }
+    
+    if (instance) {
+        let taskSql = `
+            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
+            FROM ACT_RU_TASK
+            WHERE PROC_INST_ID_ = ?
+        `
+        if (dbType === 'postgres') {
+            taskSql = taskSql.replace(/\?/, '$1')
+        }
+        if (dbType === 'mysql') {
+            const [rows] = await db.execute(taskSql, [instanceId])
+            instance.currentTasks = rows
+        } else {
+            const result = await db.query(taskSql, [instanceId])
+            instance.currentTasks = result.rows
+        }
+    }
+    
+    return instance
 }
 
 async function getProcessVariables(db, dbType, instanceId) {
-  const sql = `
-    SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as doubleValue, LONG_ as longValue
-    FROM ACT_RU_VARIABLE
-    WHERE PROC_INST_ID_ = ?
-  `
-  const finalSql = dbType === 'postgres' ? sql.replace(/\?/, '$1') : sql
-  const variables = await query(db, dbType, finalSql, [instanceId])
-  
-  return variables.map(v => {
-    let value
-    switch (v.type) {
-      case 'string': value = v.textValue; break
-      case 'long': value = v.longValue; break
-      case 'double': value = v.doubleValue; break
-      default: value = v.textValue
+    let sql = `
+        SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as doubleValue, LONG_ as longValue
+        FROM ACT_RU_VARIABLE
+        WHERE PROC_INST_ID_ = ?
+    `
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/, '$1')
     }
-    return { name: v.name, type: v.type, value }
-  })
+    
+    let variables
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, [instanceId])
+        variables = rows
+    } else {
+        const result = await db.query(sql, [instanceId])
+        variables = result.rows
+    }
+    
+    return variables.map(v => {
+        let value
+        switch (v.type) {
+            case 'string': value = v.textValue; break
+            case 'long': value = v.longValue; break
+            case 'double': value = v.doubleValue; break
+            default: value = v.textValue
+        }
+        return { name: v.name, type: v.type, value }
+    })
 }
 
 async function setProcessVariable(db, dbType, instanceId, variable) {
-  // 先删除旧变量
-  const deleteSql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-  const finalDeleteSql = dbType === 'postgres' ? deleteSql.replace(/\?/g, (_, i) => `$${i + 1}`) : deleteSql
-  await query(db, dbType, finalDeleteSql, [instanceId, variable.name])
-  
-  // 插入新变量
-  let insertSql, params
-  if (dbType === 'mysql') {
-    insertSql = `
-      INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-      VALUES (UUID(), ?, ?, ?, ?, ?, ?)
-    `
-    params = [instanceId, variable.name, variable.type]
-  } else {
-    insertSql = `
-      INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-    `
-    params = [instanceId, variable.name, variable.type]
-  }
-  
-  switch (variable.type) {
-    case 'string':
-      params.push(variable.value, null, null)
-      break
-    case 'long':
-      params.push(null, null, parseInt(variable.value))
-      break
-    case 'double':
-      params.push(null, parseFloat(variable.value), null)
-      break
-    default:
-      params.push(String(variable.value), null, null)
-  }
-  
-  await query(db, dbType, insertSql, params)
+    let deleteSql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+    if (dbType === 'postgres') {
+        deleteSql = deleteSql.replace(/\?/g, (_, i) => `$${i + 1}`)
+    }
+    await query(db, dbType, deleteSql, [instanceId, variable.name])
+    
+    let insertSql
+    let params
+    
+    if (dbType === 'mysql') {
+        insertSql = `
+            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
+            VALUES (UUID(), ?, ?, ?, ?, ?, ?)
+        `
+        params = [instanceId, variable.name, variable.type]
+    } else {
+        insertSql = `
+            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
+            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+        `
+        params = [instanceId, variable.name, variable.type]
+    }
+    
+    switch (variable.type) {
+        case 'string':
+            params.push(variable.value, null, null)
+            break
+        case 'long':
+            params.push(null, null, parseInt(variable.value))
+            break
+        case 'double':
+            params.push(null, parseFloat(variable.value), null)
+            break
+        default:
+            params.push(String(variable.value), null, null)
+    }
+    
+    await query(db, dbType, insertSql, params)
 }
 
 async function deleteProcessVariable(db, dbType, instanceId, name) {
-  const sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-  const finalSql = dbType === 'postgres' ? sql.replace(/\?/g, (_, i) => `$${i + 1}`) : sql
-  await query(db, dbType, finalSql, [instanceId, name])
+    let sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
+    }
+    await query(db, dbType, sql, [instanceId, name])
 }
 
 async function getProcessDefinitions(db, dbType) {
-  const sql = `
-    SELECT ID_ as id, KEY_ as key, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
-    FROM ACT_RE_PROCDEF
-    ORDER BY KEY_, VERSION_ DESC
-  `
-  return await query(db, dbType, sql)
+    const sql = `
+        SELECT ID_ as id, KEY_ as key, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
+        FROM ACT_RE_PROCDEF
+        ORDER BY KEY_, VERSION_ DESC
+    `
+    return await query(db, dbType, sql)
 }
 
 async function getProcessDefinitionXml(db, dbType, definitionId) {
-  let sql
-  if (dbType === 'mysql') {
-    sql = `
-      SELECT b.BYTES_ as bytes
-      FROM ACT_RE_PROCDEF p
-      LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
-      WHERE p.ID_ = ?
-    `
-  } else {
-    sql = `
-      SELECT b.BYTES_ as bytes
-      FROM ACT_RE_PROCDEF p
-      LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
-      WHERE p.ID_ = $1
-    `
-  }
-  
-  const rows = await query(db, dbType, sql, [definitionId])
-  if (rows.length > 0) {
-    const bytes = rows[0].bytes
-    return bytes.toString ? bytes.toString('utf8') : Buffer.from(bytes).toString('utf8')
-  }
-  return ''
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT b.BYTES_ as bytes
+            FROM ACT_RE_PROCDEF p
+            LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
+            WHERE p.ID_ = ?
+        `
+    } else {
+        sql = `
+            SELECT b.BYTES_ as bytes
+            FROM ACT_RE_PROCDEF p
+            LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
+            WHERE p.ID_ = $1
+        `
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, [definitionId])
+        rows = result
+    } else {
+        const result = await db.query(sql, [definitionId])
+        rows = result.rows
+    }
+    
+    if (rows.length > 0) {
+        const bytes = rows[0].bytes
+        if (Buffer.isBuffer(bytes)) {
+            return bytes.toString('utf8')
+        } else if (bytes instanceof Uint8Array) {
+            return Buffer.from(bytes).toString('utf8')
+        }
+    }
+    return ''
 }
 
 async function getHistoryTasks(db, dbType, instanceId) {
-  const sql = `
-    SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, 
-           START_TIME_ as startTime, END_TIME_ as endTime
-    FROM ACT_HI_TASKINST
-    WHERE PROC_INST_ID_ = ?
-    ORDER BY START_TIME_ DESC
-  `
-  const finalSql = dbType === 'postgres' ? sql.replace(/\?/, '$1') : sql
-  return await query(db, dbType, finalSql, [instanceId])
+    let sql = `
+        SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, 
+               START_TIME_ as startTime, END_TIME_ as endTime
+        FROM ACT_HI_TASKINST
+        WHERE PROC_INST_ID_ = ?
+        ORDER BY START_TIME_ DESC
+    `
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/, '$1')
+    }
+    return await query(db, dbType, sql, [instanceId])
 }
 
 // ========== 启动服务器 ==========
 
-app.listen(PORT, () => {
-  console.log(`Activiti Tools 已启动: http://localhost:${PORT}`)
-  console.log('按 Ctrl+C 停止服务器')
-  open(`http://localhost:${PORT}`)
-})
+async function start() {
+    await initLocalDb()
+    
+    app.listen(PORT, () => {
+        console.log(`Activiti Tools 已启动: http://localhost:${PORT}`)
+        console.log('按 Ctrl+C 停止服务器')
+        openBrowser(`http://localhost:${PORT}`)
+    })
+}
 
 process.on('SIGINT', () => {
-  console.log('\n正在关闭服务器...')
-  if (activitiDb) {
-    if (dbConfig && dbConfig.dbType === 'postgres') {
-      activitiDb.end()
-    } else if (activitiDb.end) {
-      activitiDb.end()
+    console.log('\n正在关闭服务器...')
+    if (activitiDb) {
+        if (dbConfig?.dbType === 'postgres') {
+            activitiDb.end()
+        } else if (activitiDb.end) {
+            activitiDb.end()
+        }
     }
-  }
-  localDb.close()
-  process.exit(0)
+    if (localDb) {
+        saveLocalDb()
+        localDb.close()
+    }
+    process.exit(0)
 })
+
+start()
