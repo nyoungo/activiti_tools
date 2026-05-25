@@ -12,8 +12,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -28,13 +26,21 @@ jobs:
         run: |
           npm run build:win
 
-      - name: Push to Releases Branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build
-          publish_branch: releases
-          user_name: "GitHub Actions"
-          user_email: "actions@github.com"
-          keep_files: false
-          allow_empty_commit: false
+      - name: Configure Git and Push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          $token = "${{ secrets.GITHUB_TOKEN }}"
+          $repo = "${{ github.repository }}"
+          $remoteUrl = "https://x-access-token:$token@github.com/$repo.git"
+          
+          git checkout --orphan releases
+          git rm -rf .
+          
+          Copy-Item build/activiti-tools.exe .
+          git add activiti-tools.exe
+          git commit -m "Update release binary ${{ github.ref_name }}"
+          git push -f $remoteUrl releases
