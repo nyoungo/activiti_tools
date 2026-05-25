@@ -1,0 +1,98 @@
+name: Build Multi-Platform Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            target: node18-win-x64
+            output: activiti-tools.exe
+          - os: ubuntu-latest
+            target: node18-linux-x64
+            output: activiti-tools-linux
+          - os: macos-latest
+            target: node18-macos-x64
+            output: activiti-tools-macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Executable
+        run: |
+          node -e "
+            const pkg = require('pkg');
+            const fs = require('fs');
+            const path = require('path');
+            
+            const outputPath = path.join(__dirname, 'build', '${{ matrix.output }}');
+            if (!fs.existsSync('build')) fs.mkdirSync('build');
+            
+            pkg.exec(['.', '--targets', '${{ matrix.target }}', '--output', outputPath])
+              .then(() => console.log('Build completed:', outputPath))
+              .catch(err => { console.error(err); process.exit(1); });
+          "
+
+      - name: Rename Linux Binary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mv build/${{ matrix.output }} build/activiti-tools
+          chmod +x build/activiti-tools
+
+      - name: Make Binary Executable (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mv build/${{ matrix.output }} build/activiti-tools
+          chmod +x build/activiti-tools
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: activiti-tools-${{ matrix.os }}
+          path: |
+            build/*.exe
+            build/activiti-tools
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -laR artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/activiti-tools-windows-latest/activiti-tools.exe
+            artifacts/activiti-tools-ubuntu-latest/activiti-tools
+            artifacts/activiti-tools-macos-latest/activiti-tools
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

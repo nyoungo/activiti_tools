@@ -1,0 +1,38 @@
+{
+    "name": "activiti-tools",
+    "version": "1.0.0",
+    "description": "Activiti 6.0.0 工作流维护工具",
+    "main": "src/server.js",
+    "bin": "src/server.js",
+    "scripts": {
+        "dev": "node src/server.js",
+        "build": "npm run build:win",
+        "build:win": "pkg . --targets node18-win-x64 --output build/activiti-tools.exe",
+        "build:linux": "pkg . --targets node18-linux-x64 --output build/activiti-tools",
+        "build:mac": "pkg . --targets node18-macos-x64 --output build/activiti-tools",
+        "build:all": "pkg . --targets node18-win-x64,node18-linux-x64,node18-macos-x64 --out-path build"
+    },
+    "dependencies": {
+        "express": "^4.18.2",
+        "sql.js": "^1.10.3",
+        "mysql2": "^3.9.2",
+        "pg": "^8.11.3",
+        "cors": "^2.8.5"
+    },
+    "devDependencies": {
+        "pkg": "^5.8.1"
+    },
+    "pkg": {
+        "assets": [
+            "src/public/**/*",
+            "node_modules/sql.js/dist/sql-wasm.wasm"
+        ],
+        "targets": [
+            "node18-win-x64"
+        ],
+        "outputPath": "build",
+        "compression": "GZip"
+    },
+    "author": "",
+    "license": "MIT"
+}
