@@ -434,9 +434,12 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
             pd.KEY_ as procDefKey,
             e.START_TIME_ as startTime,
             e.START_USER_ID_ as startUserId,
-            e.BUSINESS_KEY_ as businessKey
+            e.BUSINESS_KEY_ as businessKey,
+            su.username as startUserName,
+            su.realname as startUserRealname
         FROM ACT_RU_EXECUTION e
         LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
+        LEFT JOIN sys_user su ON e.START_USER_ID_ = su.id
         WHERE e.ID_ = ? AND e.PARENT_ID_ IS NULL
     `
     
