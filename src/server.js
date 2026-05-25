@@ -6,7 +6,6 @@ const cors = require('cors')
 const mysql = require('mysql2/promise')
 const { Pool } = require('pg')
 const initSqlJs = require('sql.js')
-const hgdb = require('hgdb')
 
 const app = express()
 const PORT = 34567
@@ -405,7 +404,7 @@ async function testConnection(config) {
             })
             await conn.query('SELECT 1')
         } else if (config.dbType === 'hgdatabase') {
-            conn = await hgdb.connect({
+            conn = new Pool({
                 host: config.host,
                 port: config.port,
                 user: config.username,
@@ -417,8 +416,7 @@ async function testConnection(config) {
     } finally {
         if (conn) {
             if (config.dbType === 'mysql') await conn.end()
-            else if (config.dbType === 'postgres') await conn.end()
-            else if (config.dbType === 'hgdatabase') conn.close()
+            else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') await conn.end()
         }
     }
 }
@@ -441,7 +439,7 @@ async function createConnection(config) {
             database: config.database
         })
     } else if (config.dbType === 'hgdatabase') {
-        return await hgdb.connect({
+        return new Pool({
             host: config.host,
             port: config.port,
             user: config.username,
