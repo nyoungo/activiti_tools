@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activiti 工作流维护工具</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <h1>Activiti Tools</h1>
+            <nav>
+                <button class="nav-item active" data-page="connection">
+                    <span>🔗</span> 数据库连接
+                </button>
+                <button class="nav-item" data-page="instances">
+                    <span>📋</span> 流程实例
+                </button>
+                <button class="nav-item" data-page="definitions">
+                    <span>📄</span> 流程定义
+                </button>
+            </nav>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-dot"></span>
+                <span id="statusText">未连接</span>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 数据库连接页面 -->
+            <section id="page-connection" class="page active">
+                <div class="page-header">
+                    <h2>数据库连接</h2>
+                </div>
+                <div class="content-box">
+                    <div class="connection-form">
+                        <div class="form-group">
+                            <label>已保存的配置</label>
+                            <select id="savedConnections">
+                                <option value="">-- 选择配置 --</option>
+                            </select>
+                            <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none;">删除</button>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>连接名称</label>
+                                <input type="text" id="connName" placeholder="我的数据库">
+                            </div>
+                            <div class="form-group">
+                                <label>数据库类型</label>
+                                <select id="connType">
+                                    <option value="mysql">MySQL</option>
+                                    <option value="postgres">PostgreSQL</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>主机</label>
+                                <input type="text" id="connHost" placeholder="localhost">
+                            </div>
+                            <div class="form-group">
+                                <label>端口</label>
+                                <input type="number" id="connPort" placeholder="3306">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>数据库名</label>
+                            <input type="text" id="connDatabase" placeholder="activiti">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>用户名</label>
+                                <input type="text" id="connUsername" placeholder="root">
+                            </div>
+                            <div class="form-group">
+                                <label>密码</label>
+                                <input type="password" id="connPassword" placeholder="password">
+                            </div>
+                        </div>
+                        <div class="button-group">
+                            <button id="testConnection" class="btn btn-secondary">测试连接</button>
+                            <button id="saveConnection" class="btn btn-secondary">保存配置</button>
+                            <button id="connect" class="btn btn-primary">连接</button>
+                            <button id="disconnect" class="btn btn-danger" style="display:none;">断开</button>
+                        </div>
+                        <div id="connectionMessage" class="message"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 流程实例页面 -->
+            <section id="page-instances" class="page">
+                <div class="page-header">
+                    <h2>流程实例</h2>
+                    <div class="search-box">
+                        <input type="text" id="searchKeyword" placeholder="搜索流程名称、Key或业务Key...">
+                        <button id="searchBtn" class="btn btn-primary">搜索</button>
+                    </div>
+                </div>
+                <div class="content-box">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>实例ID</th>
+                                <th>流程名称</th>
+                                <th>流程Key</th>
+                                <th>业务Key</th>
+                                <th>开始时间</th>
+                                <th>当前任务</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="instancesTableBody">
+                            <tr><td colspan="7" class="text-center">请先连接数据库</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="pagination" id="pagination"></div>
+                </div>
+            </section>
+
+            <!-- 流程定义页面 -->
+            <section id="page-definitions" class="page">
+                <div class="page-header">
+                    <h2>流程定义</h2>
+                </div>
+                <div class="content-box">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Key</th>
+                                <th>名称</th>
+                                <th>版本</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="definitionsTableBody">
+                            <tr><td colspan="5" class="text-center">请先连接数据库</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 流程详情模态框 -->
+    <div id="instanceModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>流程实例详情</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="instanceModalBody"></div>
+        </div>
+    </div>
+
+    <!-- 流程定义XML模态框 -->
+    <div id="xmlModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>流程定义 XML</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <textarea id="xmlContent" readonly></textarea>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

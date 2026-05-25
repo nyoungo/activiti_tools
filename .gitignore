@@ -1,0 +1,5 @@
+node_modules
+config.db
+build
+*.exe
+.DS_Store
