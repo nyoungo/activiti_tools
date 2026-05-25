@@ -32,13 +32,13 @@ jobs:
         run: |
           $repoUrl = "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
           mkdir temp-releases
           cd temp-releases
           
           git init
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
           Copy-Item -Path ../build/activiti-tools.exe -Destination . -Force
           git add activiti-tools.exe
           git commit -m "Update release binary ${{ github.ref_name }}"
