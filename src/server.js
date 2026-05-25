@@ -308,6 +308,61 @@ app.post('/api/instances/:id/jump-to-task', async (req, res) => {
     }
 })
 
+app.post('/api/tasks/:taskId/set-assignee', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { assignee } = req.body
+        await setTaskAssignee(activitiDb, dbConfig.dbType, req.params.taskId, assignee)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/api/tasks/:taskId/add-identitylink', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { userId, type } = req.body
+        await addTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.delete('/api/tasks/:taskId/identitylink', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { userId, type } = req.body || {}
+        await deleteTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.get('/api/tasks/:taskId/identitylinks', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const identitylinks = await getTaskIdentityLinks(activitiDb, dbConfig.dbType, req.params.taskId)
+        res.json(identitylinks)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 // ========== 数据库操作函数 ==========
 
 async function testConnection(config) {
@@ -786,6 +841,83 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
             ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
         `
         await db.query(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+    }
+}
+
+async function setTaskAssignee(db, dbType, taskId, assignee) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = 'UPDATE ACT_RU_TASK SET ASSIGNEE_ = ?, REV_ = REV_ + 1 WHERE ID_ = ?'
+        await db.execute(sql, [assignee, taskId])
+    } else {
+        sql = 'UPDATE ACT_RU_TASK SET ASSIGNEE_ = $1, REV_ = REV_ + 1 WHERE ID_ = $2'
+        await db.query(sql, [assignee, taskId])
+    }
+}
+
+async function addTaskIdentityLink(db, dbType, taskId, userId, type) {
+    const id = `${taskId}-${userId}-${type}`
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
+            VALUES (?, 1, ?, ?, NULL, ?, NULL, NULL)
+        `
+        await db.execute(sql, [id, type, userId, taskId])
+    } else {
+        sql = `
+            INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
+            VALUES ($1, 1, $2, $3, NULL, $4, NULL, NULL)
+        `
+        await db.query(sql, [id, type, userId, taskId])
+    }
+}
+
+async function deleteTaskIdentityLink(db, dbType, taskId, userId, type) {
+    let sql
+    if (dbType === 'mysql') {
+        if (userId && type) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ? AND USER_ID_ = ? AND TYPE_ = ?'
+            await db.execute(sql, [taskId, userId, type])
+        } else if (userId) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ? AND USER_ID_ = ?'
+            await db.execute(sql, [taskId, userId])
+        } else {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = ?'
+            await db.execute(sql, [taskId])
+        }
+    } else {
+        if (userId && type) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1 AND USER_ID_ = $2 AND TYPE_ = $3'
+            await db.query(sql, [taskId, userId, type])
+        } else if (userId) {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1 AND USER_ID_ = $2'
+            await db.query(sql, [taskId, userId])
+        } else {
+            sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ = $1'
+            await db.query(sql, [taskId])
+        }
+    }
+}
+
+async function getTaskIdentityLinks(db, dbType, taskId) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
+            FROM ACT_RU_IDENTITYLINK
+            WHERE TASK_ID_ = ?
+        `
+        const [rows] = await db.execute(sql, [taskId])
+        return rows
+    } else {
+        sql = `
+            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
+            FROM ACT_RU_IDENTITYLINK
+            WHERE TASK_ID_ = $1
+        `
+        const result = await db.query(sql, [taskId])
+        return result.rows
     }
 }
 

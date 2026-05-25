@@ -54,7 +54,15 @@ const elements = {
     instanceModal: document.getElementById('instanceModal'),
     instanceModalBody: document.getElementById('instanceModalBody'),
     xmlModal: document.getElementById('xmlModal'),
-    xmlContent: document.getElementById('xmlContent')
+    xmlContent: document.getElementById('xmlContent'),
+    assigneeModal: document.getElementById('assigneeModal'),
+    assigneeTaskId: document.getElementById('assigneeTaskId'),
+    assigneeTaskName: document.getElementById('assigneeTaskName'),
+    currentAssignee: document.getElementById('currentAssignee'),
+    newAssignee: document.getElementById('newAssignee'),
+    candidateUserId: document.getElementById('candidateUserId'),
+    candidateType: document.getElementById('candidateType'),
+    identityLinkList: document.getElementById('identityLinkList')
 }
 
 // 初始化
@@ -351,7 +359,7 @@ async function showInstanceDetail(instanceId) {
             <h4>当前任务</h4>
             ${(instance.currentTasks || []).length > 0 ? `
                 <table class="data-table">
-                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>创建时间</th></tr></thead>
+                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead>
                     <tbody>
                         ${instance.currentTasks.map(t => `
                             <tr>
@@ -359,6 +367,9 @@ async function showInstanceDetail(instanceId) {
                                 <td>${t.name}</td>
                                 <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
                                 <td>${new Date(t.createTime).toLocaleString()}</td>
+                                <td>
+                                    <button class="btn btn-small btn-primary" onclick="openAssigneeModal('${t.id}', '${t.name}', '${t.assignee || ''}')">设置审批人</button>
+                                </td>
                             </tr>
                         `).join('')}
                     </tbody>
@@ -551,6 +562,104 @@ async function jumpToTask(instanceId, taskId) {
     }
 }
 
+let currentTaskId = null
+
+async function openAssigneeModal(taskId, taskName, currentAssignee) {
+    currentTaskId = taskId
+    elements.assigneeTaskId.value = taskId
+    elements.assigneeTaskName.value = taskName
+    elements.currentAssignee.value = currentAssignee || '无'
+    elements.newAssignee.value = ''
+    elements.candidateUserId.value = ''
+    
+    await loadIdentityLinks(taskId)
+    elements.assigneeModal.classList.add('show')
+}
+
+async function loadIdentityLinks(taskId) {
+    const identitylinks = await api.get(`/api/tasks/${taskId}/identitylinks`)
+    
+    if (identitylinks && identitylinks.length > 0) {
+        elements.identityLinkList.innerHTML = identitylinks.map(link => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; border-bottom: 1px solid #eee;">
+                <span>${link.userId} (${link.type === 'candidate' ? '候选人' : '审批人'})</span>
+                <button class="btn btn-small btn-danger" onclick="removeIdentityLink('${link.userId}', '${link.type}')">删除</button>
+            </div>
+        `).join('')
+    } else {
+        elements.identityLinkList.innerHTML = '<p style="color: #999; text-align: center;">暂无候选人/审批人</p>'
+    }
+}
+
+async function saveAssignee() {
+    const newAssignee = elements.newAssignee.value.trim()
+    
+    if (!newAssignee) {
+        alert('请输入审批人ID')
+        return
+    }
+    
+    const result = await api.post(`/api/tasks/${currentTaskId}/set-assignee`, { assignee: newAssignee })
+    
+    if (result.success) {
+        alert('审批人设置成功')
+        elements.currentAssignee.value = newAssignee
+        elements.newAssignee.value = ''
+        await loadIdentityLinks(currentTaskId)
+    } else {
+        alert('设置失败: ' + result.error)
+    }
+}
+
+async function addCandidate() {
+    const userId = elements.candidateUserId.value.trim()
+    const type = elements.candidateType.value
+    
+    if (!userId) {
+        alert('请输入用户ID')
+        return
+    }
+    
+    const result = await api.post(`/api/tasks/${currentTaskId}/add-identitylink`, { userId, type })
+    
+    if (result.success) {
+        alert('添加成功')
+        elements.candidateUserId.value = ''
+        await loadIdentityLinks(currentTaskId)
+    } else {
+        alert('添加失败: ' + result.error)
+    }
+}
+
+async function removeIdentityLink(userId, type) {
+    if (!confirm(`确定删除用户 ${userId} 的身份链接吗？`)) return
+    
+    const result = await api.request(`/api/tasks/${currentTaskId}/identitylink?userId=${userId}&type=${type}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ userId, type })
+    })
+    
+    if (result.success) {
+        alert('删除成功')
+        await loadIdentityLinks(currentTaskId)
+    } else {
+        alert('删除失败: ' + result.error)
+    }
+}
+
+async function refreshTaskInfo() {
+    if (!currentTaskId) return
+    
+    const instance = await api.get(`/api/instances/${state.currentInstanceId}`)
+    const task = instance.currentTasks.find(t => t.id === currentTaskId)
+    
+    if (task) {
+        elements.currentAssignee.value = task.assignee || '无'
+    }
+    
+    await loadIdentityLinks(currentTaskId)
+}
+
 // 全局暴露函数
 window.goToPage = goToPage
 window.showInstanceDetail = showInstanceDetail
@@ -559,6 +668,11 @@ window.addVariable = addVariable
 window.saveVariable = saveVariable
 window.deleteVariable = deleteVariable
 window.showDefinitionXml = showDefinitionXml
+window.openAssigneeModal = openAssigneeModal
+window.saveAssignee = saveAssignee
+window.addCandidate = addCandidate
+window.removeIdentityLink = removeIdentityLink
+window.refreshTaskInfo = refreshTaskInfo
 
 // 启动应用
 init()

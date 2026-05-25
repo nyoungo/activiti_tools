@@ -172,6 +172,55 @@
         </div>
     </div>
 
+    <!-- 设置审批人模态框 -->
+    <div id="assigneeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>设置审批人</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>任务ID</label>
+                    <input type="text" id="assigneeTaskId" readonly>
+                </div>
+                <div class="form-group">
+                    <label>任务名称</label>
+                    <input type="text" id="assigneeTaskName" readonly>
+                </div>
+                <div class="form-group">
+                    <label>当前审批人</label>
+                    <input type="text" id="currentAssignee" readonly>
+                </div>
+                <div class="form-group">
+                    <label>设置审批人</label>
+                    <input type="text" id="newAssignee" placeholder="输入用户ID">
+                    <small>设置单个审批人，将替换当前审批人</small>
+                </div>
+                <div class="form-group">
+                    <label>添加候选人</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="candidateUserId" placeholder="输入用户ID" style="flex: 1;">
+                        <select id="candidateType">
+                            <option value="candidate">候选人</option>
+                            <option value="assignee">审批人</option>
+                        </select>
+                        <button class="btn btn-small btn-secondary" onclick="addCandidate()">添加</button>
+                    </div>
+                    <small>添加多审批人（IdentityLink）</small>
+                </div>
+                <div class="form-group">
+                    <label>当前候选人/审批人</label>
+                    <div id="identityLinkList" style="max-height: 200px; overflow-y: auto;"></div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
+                    <button class="btn btn-secondary" onclick="refreshTaskInfo()">刷新</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="js/app.js"></script>
 </body>
 </html>
