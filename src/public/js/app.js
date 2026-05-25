@@ -728,10 +728,7 @@ async function addCandidate() {
 async function removeIdentityLink(userId, type) {
     if (!confirm(`确定删除用户 ${userId} 的身份链接吗？`)) return
 
-    const result = await api.request(`/api/tasks/${currentTaskId}/identitylink?userId=${userId}&type=${type}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ userId, type })
-    })
+    const result = await api.delete(`/api/tasks/${currentTaskId}/identitylink?userId=${userId}&type=${type}`)
 
     if (result.success) {
         alert('删除成功')

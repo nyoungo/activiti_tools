@@ -179,9 +179,15 @@ app.get('/api/instances', async (req, res) => {
         const page = parseInt(req.query.page) || 1
         const size = parseInt(req.query.size) || 10
         const keyword = req.query.keyword || ''
+        const status = req.query.status || 'running'
         const offset = (page - 1) * size
         
-        const result = await getProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        let result
+        if (status === 'finished') {
+            result = await getFinishedProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        } else {
+            result = await getProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        }
         res.json(result)
     } catch (error) {
         res.status(500).json({ error: error.message })
@@ -359,7 +365,8 @@ app.delete('/api/tasks/:taskId/identitylink', async (req, res) => {
     }
     
     try {
-        const { userId, type } = req.body || {}
+        const userId = req.query.userId
+        const type = req.query.type
         await deleteTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
         res.json({ success: true })
     } catch (error) {
@@ -526,11 +533,12 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     }
     
     for (const inst of instances) {
-        inst.isFinished = false
         let taskSql = `
-            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-            FROM ACT_RU_TASK
-            WHERE PROC_INST_ID_ = ?
+            SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
+                   su.username as assigneeName, su.realname as assigneeRealname
+            FROM ACT_RU_TASK t
+            LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+            WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
             taskSql = taskSql.replace(/\?/, '$1')
@@ -541,6 +549,26 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
         } else {
             const result = await db.query(taskSql, [inst.id])
             inst.currentTasks = result.rows
+        }
+        
+        inst.isFinished = inst.currentTasks.length === 0
+        
+        if (!inst.isFinished) {
+            let historySql = `
+                SELECT END_TIME_ 
+                FROM ACT_HI_PROCINST 
+                WHERE PROC_INST_ID_ = ?
+            `
+            if (dbType === 'postgres') {
+                historySql = historySql.replace(/\?/, '$1')
+            }
+            if (dbType === 'mysql') {
+                const [rows] = await db.execute(historySql, [inst.id])
+                inst.isFinished = rows.length > 0 && rows[0].END_TIME_ !== null
+            } else {
+                const result = await db.query(historySql, [inst.id])
+                inst.isFinished = result.rows.length > 0 && result.rows[0].END_TIME_ !== null
+            }
         }
     }
     
@@ -613,9 +641,11 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         instance.isFinished = isFinished
         
         let taskSql = `
-            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-            FROM ACT_RU_TASK
-            WHERE PROC_INST_ID_ = ?
+            SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
+                   su.username as assigneeName, su.realname as assigneeRealname
+            FROM ACT_RU_TASK t
+            LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+            WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
             taskSql = taskSql.replace(/\?/, '$1')
@@ -798,15 +828,19 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
         sql = `
             SELECT b.BYTES_ as bytes
             FROM ACT_RE_PROCDEF p
-            LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
-            WHERE p.ID_ = ?
+            LEFT JOIN ACT_GE_BYTEARRAY b ON p.DEPLOYMENT_ID_ = b.DEPLOYMENT_ID_
+            WHERE p.ID_ = ? AND b.NAME_ LIKE '%.bpmn%'
+            ORDER BY b.ID_ DESC
+            LIMIT 1
         `
     } else {
         sql = `
             SELECT b.BYTES_ as bytes
             FROM ACT_RE_PROCDEF p
-            LEFT JOIN ACT_GE_BYTEARRAY b ON p.RESOURCE_ID_ = b.ID_
-            WHERE p.ID_ = $1
+            LEFT JOIN ACT_GE_BYTEARRAY b ON p.DEPLOYMENT_ID_ = b.DEPLOYMENT_ID_
+            WHERE p.ID_ = $1 AND b.NAME_ ILIKE '%.bpmn%'
+            ORDER BY b.ID_ DESC
+            LIMIT 1
         `
     }
     
@@ -825,6 +859,8 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
             return bytes.toString('utf8')
         } else if (bytes instanceof Uint8Array) {
             return Buffer.from(bytes).toString('utf8')
+        } else if (typeof bytes === 'string') {
+            return bytes
         }
     }
     return ''
@@ -832,9 +868,12 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
 
 async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     let sql = `
-        SELECT p.RESOURCE_ID_ as resourceId
+        SELECT b.ID_ as byteArrayId
         FROM ACT_RE_PROCDEF p
-        WHERE p.ID_ = ?
+        LEFT JOIN ACT_GE_BYTEARRAY b ON p.DEPLOYMENT_ID_ = b.DEPLOYMENT_ID_
+        WHERE p.ID_ = ? AND b.NAME_ LIKE '%.bpmn%'
+        ORDER BY b.ID_ DESC
+        LIMIT 1
     `
     
     let params = [definitionId]
@@ -852,10 +891,10 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     }
     
     if (rows.length === 0) {
-        throw new Error('流程定义不存在')
+        throw new Error('流程定义或BPMN文件不存在')
     }
     
-    const resourceId = rows[0].resourceId
+    const byteArrayId = rows[0].byteArrayId
     const bytes = Buffer.from(xml, 'utf8')
     
     let updateSql
@@ -866,9 +905,9 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     }
     
     if (dbType === 'mysql') {
-        await db.execute(updateSql, [bytes, resourceId])
+        await db.execute(updateSql, [bytes, byteArrayId])
     } else {
-        await db.query(updateSql, [bytes, resourceId])
+        await db.query(updateSql, [bytes, byteArrayId])
     }
 }
 
@@ -923,6 +962,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
     const procDefId = rows[0].PROC_DEF_ID_
     
     if (dbType === 'mysql') {
+        await db.execute('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?)', [instanceId])
         await db.execute('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?', [instanceId])
         await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
         
@@ -933,6 +973,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
         `
         await db.execute(sql, [taskDefKey, instanceId])
     } else {
+        await db.query('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1)', [instanceId])
         await db.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
         await db.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
         
