@@ -6,6 +6,7 @@ const cors = require('cors')
 const mysql = require('mysql2/promise')
 const { Pool } = require('pg')
 const initSqlJs = require('sql.js')
+const hgdb = require('hgdb')
 
 const app = express()
 const PORT = 34567
@@ -266,6 +267,20 @@ app.get('/api/definitions/:id/xml', async (req, res) => {
     }
 })
 
+app.put('/api/definitions/:id/xml', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { xml } = req.body
+        await updateProcessDefinitionXml(activitiDb, dbConfig.dbType, req.params.id, xml)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id/history-tasks', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -274,6 +289,20 @@ app.get('/api/instances/:id/history-tasks', async (req, res) => {
     try {
         const tasks = await getHistoryTasks(activitiDb, dbConfig.dbType, req.params.id)
         res.json(tasks)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.post('/api/instances/:id/jump-to-task', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { taskId } = req.body
+        await jumpToHistoryTask(activitiDb, dbConfig.dbType, req.params.id, taskId)
+        res.json({ success: true })
     } catch (error) {
         res.status(500).json({ error: error.message })
     }
@@ -302,11 +331,21 @@ async function testConnection(config) {
                 database: config.database
             })
             await conn.query('SELECT 1')
+        } else if (config.dbType === 'hgdatabase') {
+            conn = await hgdb.connect({
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: config.database
+            })
+            await conn.query('SELECT 1')
         }
     } finally {
         if (conn) {
             if (config.dbType === 'mysql') await conn.end()
             else if (config.dbType === 'postgres') await conn.end()
+            else if (config.dbType === 'hgdatabase') conn.close()
         }
     }
 }
@@ -328,6 +367,14 @@ async function createConnection(config) {
             password: config.password,
             database: config.database
         })
+    } else if (config.dbType === 'hgdatabase') {
+        return await hgdb.connect({
+            host: config.host,
+            port: config.port,
+            user: config.username,
+            password: config.password,
+            database: config.database
+        })
     }
 }
 
@@ -336,6 +383,9 @@ async function query(db, dbType, sql, params = []) {
         const [rows] = await db.execute(sql, params)
         return rows
     } else if (dbType === 'postgres') {
+        const result = await db.query(sql, params)
+        return result.rows
+    } else if (dbType === 'hgdatabase') {
         const result = await db.query(sql, params)
         return result.rows
     }
@@ -350,9 +400,12 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
             pd.KEY_ as procDefKey,
             e.START_TIME_ as startTime,
             e.START_USER_ID_ as startUserId,
-            e.BUSINESS_KEY_ as businessKey
+            e.BUSINESS_KEY_ as businessKey,
+            su.username as startUserName,
+            su.realname as startUserRealname
         FROM ACT_RU_EXECUTION e
         LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
+        LEFT JOIN sys_user su ON e.START_USER_ID_ = su.id
         WHERE e.PARENT_ID_ IS NULL
     `
     const params = []
@@ -431,9 +484,12 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
             pd.KEY_ as procDefKey,
             e.START_TIME_ as startTime,
             e.START_USER_ID_ as startUserId,
-            e.BUSINESS_KEY_ as businessKey
+            e.BUSINESS_KEY_ as businessKey,
+            su.username as startUserName,
+            su.realname as startUserRealname
         FROM ACT_RU_EXECUTION e
         LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_
+        LEFT JOIN sys_user su ON e.START_USER_ID_ = su.id
         WHERE e.ID_ = ? AND e.PARENT_ID_ IS NULL
     `
     
@@ -595,18 +651,142 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
     return ''
 }
 
+async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
+    let sql = `
+        SELECT p.RESOURCE_ID_ as resourceId
+        FROM ACT_RE_PROCDEF p
+        WHERE p.ID_ = ?
+    `
+    
+    let params = [definitionId]
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/, '$1')
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, params)
+        rows = result
+    } else {
+        const result = await db.query(sql, params)
+        rows = result.rows
+    }
+    
+    if (rows.length === 0) {
+        throw new Error('流程定义不存在')
+    }
+    
+    const resourceId = rows[0].resourceId
+    const bytes = Buffer.from(xml, 'utf8')
+    
+    let updateSql
+    if (dbType === 'mysql') {
+        updateSql = 'UPDATE ACT_GE_BYTEARRAY SET BYTES_ = ? WHERE ID_ = ?'
+    } else {
+        updateSql = 'UPDATE ACT_GE_BYTEARRAY SET BYTES_ = $1 WHERE ID_ = $2'
+    }
+    
+    if (dbType === 'mysql') {
+        await db.execute(updateSql, [bytes, resourceId])
+    } else {
+        await db.query(updateSql, [bytes, resourceId])
+    }
+}
+
 async function getHistoryTasks(db, dbType, instanceId) {
     let sql = `
-        SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, 
-               START_TIME_ as startTime, END_TIME_ as endTime
-        FROM ACT_HI_TASKINST
-        WHERE PROC_INST_ID_ = ?
-        ORDER BY START_TIME_ DESC
+        SELECT 
+            t.ID_ as id, 
+            t.NAME_ as name, 
+            t.ASSIGNEE_ as assignee, 
+            t.START_TIME_ as startTime, 
+            t.END_TIME_ as endTime,
+            su.username as assigneeName,
+            su.realname as assigneeRealname
+        FROM ACT_HI_TASKINST t
+        LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+        WHERE t.PROC_INST_ID_ = ?
+        ORDER BY t.START_TIME_ DESC
     `
     if (dbType === 'postgres') {
         sql = sql.replace(/\?/, '$1')
     }
     return await query(db, dbType, sql, [instanceId])
+}
+
+async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
+    let sql, params
+    
+    sql = `
+        SELECT t.TASK_DEF_KEY_, t.PROC_DEF_ID_
+        FROM ACT_HI_TASKINST t
+        WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
+    `
+    params = [taskId, instanceId]
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, params)
+        rows = result
+    } else {
+        const result = await db.query(sql, params)
+        rows = result.rows
+    }
+    
+    if (rows.length === 0) {
+        throw new Error('历史任务不存在')
+    }
+    
+    const taskDefKey = rows[0].TASK_DEF_KEY_
+    const procDefId = rows[0].PROC_DEF_ID_
+    
+    if (dbType === 'mysql') {
+        await db.execute('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?', [instanceId])
+        await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
+        
+        sql = `
+            UPDATE ACT_RU_EXECUTION 
+            SET ACT_ID_ = ?, IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
+            WHERE ID_ = ?
+        `
+        await db.execute(sql, [taskDefKey, instanceId])
+    } else {
+        await db.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
+        await db.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
+        
+        sql = `
+            UPDATE ACT_RU_EXECUTION 
+            SET ACT_ID_ = $1, IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
+            WHERE ID_ = $2
+        `
+        await db.query(sql, [taskDefKey, instanceId])
+    }
+    
+    const taskIdNew = `${instanceId}-${taskDefKey}`
+    if (dbType === 'mysql') {
+        sql = `
+            INSERT INTO ACT_RU_TASK (
+                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ACT_ID_, ASSIGNEE_,
+                OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
+                CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+        `
+        await db.execute(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+    } else {
+        sql = `
+            INSERT INTO ACT_RU_TASK (
+                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ACT_ID_, ASSIGNEE_,
+                OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
+                CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+        `
+        await db.query(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+    }
 }
 
 // ========== 启动服务器 ==========

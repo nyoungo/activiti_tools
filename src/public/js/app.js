@@ -76,7 +76,14 @@ function bindEvents() {
 
     // 数据库类型切换
     elements.connType.addEventListener('change', () => {
-        elements.connPort.value = elements.connType.value === 'mysql' ? '3306' : '5432'
+        const type = elements.connType.value
+        if (type === 'mysql') {
+            elements.connPort.value = '3306'
+        } else if (type === 'postgres') {
+            elements.connPort.value = '5432'
+        } else if (type === 'hgdatabase') {
+            elements.connPort.value = '5866'
+        }
     })
 
     // 已保存的配置
@@ -336,7 +343,7 @@ async function showInstanceDetail(instanceId) {
                 <div class="info-item"><label>流程Key</label><span>${instance.procDefKey || '-'}</span></div>
                 <div class="info-item"><label>业务Key</label><span>${instance.businessKey || '-'}</span></div>
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
-                <div class="info-item"><label>开始用户</label><span>${instance.startUserId || '-'}</span></div>
+                <div class="info-item"><label>开始用户</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
             </div>
         </div>
         
@@ -350,7 +357,7 @@ async function showInstanceDetail(instanceId) {
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assignee || '-'}</td>
+                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
                                 <td>${new Date(t.createTime).toLocaleString()}</td>
                             </tr>
                         `).join('')}
@@ -401,15 +408,18 @@ async function showInstanceDetail(instanceId) {
             <h4>历史任务</h4>
             ${historyTasks.length > 0 ? `
                 <table class="data-table">
-                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>开始时间</th><th>结束时间</th></tr></thead>
+                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>开始时间</th><th>结束时间</th><th>操作</th></tr></thead>
                     <tbody>
                         ${historyTasks.map(t => `
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assignee || '-'}</td>
+                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
+                                <td>
+                                    <button class="btn btn-small btn-primary" onclick="jumpToTask('${instanceId}', '${t.id}')">跳转到此处</button>
+                                </td>
                             </tr>
                         `).join('')}
                     </tbody>
@@ -470,7 +480,8 @@ async function loadDefinitions() {
                 <td>${def.name || '-'}</td>
                 <td>${def.version}</td>
                 <td>
-                    <button class="btn btn-small btn-primary" onclick="showDefinitionXml('${def.id}')">查看XML</button>
+                    <button class="btn btn-small btn-primary" onclick="showDefinitionXml('${def.id}', 'view')">查看XML</button>
+                    <button class="btn btn-small btn-secondary" onclick="showDefinitionXml('${def.id}', 'edit')">修改XML</button>
                 </td>
             </tr>
         `).join('')
@@ -480,15 +491,70 @@ async function loadDefinitions() {
 }
 
 // 显示流程定义XML
-async function showDefinitionXml(defId) {
+async function showDefinitionXml(defId, mode = 'view') {
     const result = await api.get(`/api/definitions/${defId}/xml`)
     elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = mode === 'view'
     elements.xmlModal.classList.add('show')
+    
+    if (mode === 'edit') {
+        const modalBody = elements.xmlModal.querySelector('.modal-body')
+        let saveBtn = modalBody.querySelector('#saveXmlBtn')
+        if (!saveBtn) {
+            saveBtn = document.createElement('button')
+            saveBtn.id = 'saveXmlBtn'
+            saveBtn.className = 'btn btn-primary'
+            saveBtn.textContent = '保存修改'
+            saveBtn.style.marginTop = '12px'
+            saveBtn.onclick = () => saveDefinitionXml(defId)
+            modalBody.appendChild(saveBtn)
+        } else {
+            saveBtn.style.display = 'block'
+        }
+    }
+}
+
+// 保存流程定义XML
+async function saveDefinitionXml(defId) {
+    const xml = elements.xmlContent.value
+    if (!xml.trim()) {
+        alert('XML内容不能为空')
+        return
+    }
+    
+    const result = await api.request(`/api/definitions/${defId}/xml`, {
+        method: 'PUT',
+        body: JSON.stringify({ xml })
+    })
+    
+    if (result.success) {
+        alert('保存成功')
+        elements.xmlModal.classList.remove('show')
+        loadDefinitions()
+    } else {
+        alert('保存失败: ' + result.error)
+    }
+}
+
+// 跳转到历史任务
+async function jumpToTask(instanceId, taskId) {
+    if (!confirm('确定要跳转到此历史任务吗？这将会重置流程状态。')) return
+    
+    const result = await api.post(`/api/instances/${instanceId}/jump-to-task`, { taskId })
+    
+    if (result.success) {
+        alert('跳转成功')
+        elements.instanceModal.classList.remove('show')
+        loadInstances()
+    } else {
+        alert('跳转失败: ' + result.error)
+    }
 }
 
 // 全局暴露函数
 window.goToPage = goToPage
 window.showInstanceDetail = showInstanceDetail
+window.jumpToTask = jumpToTask
 window.addVariable = addVariable
 window.saveVariable = saveVariable
 window.deleteVariable = deleteVariable
