@@ -304,6 +304,19 @@ app.put('/api/definitions/:id/xml', async (req, res) => {
     }
 })
 
+app.get('/api/definitions/:id/affected-instances', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const result = await getAffectedInstances(activitiDb, dbConfig.dbType, req.params.id)
+        res.json(result)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id/history-tasks', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -909,6 +922,48 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     } else {
         await db.query(updateSql, [bytes, byteArrayId])
     }
+}
+
+async function getAffectedInstances(db, dbType, definitionId) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT 
+                COUNT(*) as total,
+                MIN(START_TIME_) as earliestStart,
+                MAX(START_TIME_) as latestStart
+            FROM ACT_HI_PROCINST
+            WHERE PROC_DEF_ID_ = ?
+        `
+    } else {
+        sql = `
+            SELECT 
+                COUNT(*) as total,
+                MIN(START_TIME_) as earliestStart,
+                MAX(START_TIME_) as latestStart
+            FROM ACT_HI_PROCINST
+            WHERE PROC_DEF_ID_ = $1
+        `
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, [definitionId])
+        rows = result
+    } else {
+        const result = await db.query(sql, [definitionId])
+        rows = result.rows
+    }
+    
+    if (rows.length > 0) {
+        return {
+            total: parseInt(rows[0].total || 0),
+            earliestStart: rows[0].earliestStart,
+            latestStart: rows[0].latestStart
+        }
+    }
+    
+    return { total: 0, earliestStart: null, latestStart: null }
 }
 
 async function getHistoryTasks(db, dbType, instanceId) {

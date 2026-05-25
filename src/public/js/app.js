@@ -533,6 +533,7 @@ async function viewDefinitionXml(defId) {
     elements.xmlActions.style.display = 'none'
     state.currentDefinitionId = defId
     state.originalXml = result.xml
+    document.getElementById('affectedInstancesInfo').style.display = 'none'
     elements.xmlModal.classList.add('show')
 }
 
@@ -544,6 +545,32 @@ async function editDefinitionXml(defId) {
     elements.xmlActions.style.display = 'block'
     state.currentDefinitionId = defId
     state.originalXml = result.xml
+    
+    const affectedInfo = document.getElementById('affectedInstancesInfo')
+    try {
+        const affected = await api.get(`/api/definitions/${defId}/affected-instances`)
+        if (affected.total > 0) {
+            const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+            const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+            affectedInfo.innerHTML = `
+                <div class="warning-box">
+                    <strong>⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例</strong><br>
+                    <small>实例时间段：${earliest} ~ ${latest}</small>
+                </div>
+            `
+            affectedInfo.style.display = 'block'
+        } else {
+            affectedInfo.innerHTML = `
+                <div class="info-box">
+                    <strong>ℹ️ 暂无关联的历史实例，可以安全修改</strong>
+                </div>
+            `
+            affectedInfo.style.display = 'block'
+        }
+    } catch (error) {
+        affectedInfo.style.display = 'none'
+    }
+    
     elements.xmlModal.classList.add('show')
 }
 
@@ -552,6 +579,19 @@ async function saveXml() {
     const xml = elements.xmlContent.value
     if (!xml.trim()) {
         alert('XML内容不能为空')
+        return
+    }
+
+    const affected = await api.get(`/api/definitions/${state.currentDefinitionId}/affected-instances`)
+    let confirmMsg = '确定要保存修改吗？'
+    
+    if (affected.total > 0) {
+        const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+        const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+        confirmMsg = `⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例\n\n实例时间段：${earliest} ~ ${latest}\n\n确定要继续保存吗？`
+    }
+    
+    if (!confirm(confirmMsg)) {
         return
     }
 
