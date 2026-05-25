@@ -30,11 +30,36 @@ app.use(express.json())
 // 处理静态资源路径
 function getPublicPath() {
     if (process.pkg) {
-        return path.join(path.dirname(process.execPath), 'public')
+        // 尝试多个可能的路径
+        const execDir = path.dirname(process.execPath)
+        const possiblePaths = [
+            path.join(execDir, 'src', 'public'),
+            path.join(execDir, 'public'),
+            path.join(execDir, 'snapshot', 'src', 'public'),
+            path.join(__dirname, 'public')
+        ]
+        
+        for (const p of possiblePaths) {
+            const indexPath = path.join(p, 'index.html')
+            if (fs.existsSync(indexPath)) {
+                console.log(`[DEBUG] Found public path: ${p}`)
+                return p
+            }
+        }
+        
+        // 如果都没找到，使用第一个备选路径并输出警告
+        console.warn(`[WARN] Could not find public/index.html in any expected location`)
+        console.warn(`[WARN] Tried paths: ${possiblePaths.join(', ')}`)
+        console.warn(`[WARN] Checked __dirname: ${__dirname}`)
+        console.warn(`[WARN] Checked execPath: ${process.execPath}`)
+        return possiblePaths[0]
     }
     return path.join(__dirname, 'public')
 }
-app.use(express.static(getPublicPath()))
+
+const publicPath = getPublicPath()
+console.log(`[INFO] Static files path: ${publicPath}`)
+app.use(express.static(publicPath))
 
 async function initLocalDb() {
     const SQL = await initSqlJs()
