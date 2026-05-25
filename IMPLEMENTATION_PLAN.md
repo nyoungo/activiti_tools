@@ -3,7 +3,7 @@
 ## 一、项目概述
 
 ### 1.1 项目目标
-开发一个**便携小巧**的Activiti 6.0.0工作流维护工具，**双击即可在Windows上运行**，无需安装任何运行环境（JRE/Node.js等）。支持MySQL和PostgreSQL数据库连接，提供流程实例管理、节点编辑、流程跳转回退、变量管理等功能。
+开发一个**便携小巧**的Activiti 6.0.0工作流维护工具，**双击即可在Windows上运行**，无需安装任何运行环境。支持MySQL和PostgreSQL数据库连接，提供流程实例管理、节点编辑、流程跳转回退、变量管理等功能。
 
 ### 1.2 核心功能
 - **数据库连接**：支持MySQL和PostgreSQL
@@ -14,9 +14,101 @@
 - **变量管理**：流程变量和任务变量的查看与修改
 - **便携性**：单exe文件，无外部依赖
 
-## 二、技术选型（便携版）
+## 二、技术选型对比
 
-### 2.1 技术栈
+### 2.1 可选方案对比
+
+| 方案 | 技术栈 | 体积 | 启动速度 | 学习成本 | 推荐度 |
+|------|--------|------|----------|----------|--------|
+| **方案A** | Node.js + Electron + Vue 3 | ~120-180MB | 中 | 低（前端友好） | ⭐⭐⭐⭐ |
+| **方案B** | Node.js + pkg + 原生GUI | ~50-80MB | 快 | 中 | ⭐⭐⭐ |
+| **方案C** | Go + Wails | ~15-25MB | 快 | 高 | ⭐⭐⭐⭐⭐ |
+| 方案D | Java + Swing | ~100MB+ | 慢 | 中 | ⭐⭐ |
+
+---
+
+## 三、Node.js方案详情（方案A：推荐）
+
+### 3.1 技术栈（Node.js + Electron + Vue 3）
+- **Node.js 18+**：后端运行时
+- **Electron 28+**：桌面应用框架（内嵌Chromium + Node.js）
+- **Vue 3 + Element Plus**：前端UI框架
+- **better-sqlite3**：本地SQLite存储
+- **mysql2**：MySQL驱动
+- **pg**：PostgreSQL驱动
+- **electron-builder**：打包工具
+
+### 3.2 为什么这个方案？
+✅ **前端开发友好**：熟悉的Vue 3 + Element Plus  
+✅ **丰富的生态**：npm海量包可用  
+✅ **跨平台**：支持Windows/Mac/Linux  
+✅ **成熟稳定**：Electron广泛应用（VS Code、Discord等）  
+
+⚠️ **缺点**：体积较大（~120-180MB）
+
+### 3.3 项目结构
+```
+/workspace/
+├── package.json
+├── electron-builder.json
+├── src/
+│   ├── main/           # Electron主进程
+│   │   ├── main.js
+│   │   ├── database.js
+│   │   ├── activiti.js
+│   │   └── preload.js
+│   └── renderer/       # 渲染进程（Vue 3）
+│       ├── index.html
+│       ├── main.js
+│       ├── App.vue
+│       ├── components/
+│       ├── views/
+│       └── api/
+└── build/
+    └── activiti-tools Setup.exe  # 安装包
+    └── activiti-tools.exe        # 便携版（zip解压即用）
+```
+
+---
+
+## 四、Node.js方案详情（方案B：轻量版）
+
+### 4.1 技术栈（Node.js + pkg + 原生GUI）
+- **Node.js 18+**：后端运行时
+- **pkg**：将Node.js打包为exe
+- **pkg-fetch**：预编译Node二进制
+- **node-webkit (nw.js)** 或 **neutralino**：轻量GUI
+- 或 **Express + 浏览器**：启动本地服务器自动打开浏览器
+- **better-sqlite3**：本地SQLite存储
+- **mysql2**：MySQL驱动
+- **pg**：PostgreSQL驱动
+
+### 4.2 为什么这个方案？
+✅ **体积适中**：~50-80MB  
+✅ **Node.js生态**：npm包可用  
+✅ **无需Chromium**：使用系统浏览器或轻量WebView  
+
+### 4.3 项目结构
+```
+/workspace/
+├── package.json
+├── src/
+│   ├── server.js       # Express服务器
+│   ├── database.js
+│   ├── activiti.js
+│   └── public/         # 前端静态文件
+│       ├── index.html
+│       ├── css/
+│       └── js/
+└── build/
+    └── activiti-tools.exe  # 单exe，启动本地服务器
+```
+
+---
+
+## 五、继续Go方案（方案C）
+
+### 5.1 技术栈
 - **Go 1.21+**：后端语言，编译原生exe，无依赖
 - **Wails v2**：Go + Web技术构建桌面应用
 - **HTML5 + CSS3 + JavaScript (Vanilla JS)**：前端界面（无需框架，减小体积）
@@ -24,15 +116,189 @@
 - **MySQL Driver (github.com/go-sql-driver/mysql)**：MySQL驱动
 - **PostgreSQL Driver (github.com/lib/pq)**：PostgreSQL驱动
 
-### 2.2 为什么这个方案？
-| 对比项 | Java/Spring Boot | Electron | Go + Wails |
-|--------|------------------|----------|------------|
-| 体积 | ~100MB+ (含JRE) | ~150MB+ | ~15-25MB |
-| 启动速度 | 慢 | 中 | 快 |
-| 依赖 | 需要JRE | 无需 | 无需 |
-| 单文件 | 困难 | 是 | 是 |
+### 5.2 为什么这个方案？
+✅ **体积最小**：~15-25MB  
+✅ **启动最快**：原生编译  
+✅ **真·无依赖**：无需Node.js、无需JRE  
+✅ **单exe文件**：双击即用  
 
-### 2.3 项目结构
+⚠️ **缺点**：Go语言学习成本
+
+### 2.4 方案对比总结
+| 对比项 | 方案A (Electron) | 方案B (pkg+浏览器) | 方案C (Go+Wails) |
+|--------|------------------|----------|------------|
+| 体积 | ~120-180MB | ~50-80MB | ~15-25MB |
+| 启动速度 | 中 | 快 | 快 |
+| 依赖 | 无需 | 无需 | 无需 |
+| 单文件 | 是（zip） | 是 | 是 |
+| 开发友好 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐ |
+
+---
+
+## 六、Node.js方案A详细实现（Electron）
+
+### 6.1 package.json配置
+```json
+{
+  "name": "activiti-tools",
+  "version": "1.0.0",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.0.0",
+    "mysql2": "^3.6.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.0",
+    "vite": "^5.0.0",
+    "vue": "^3.4.0",
+    "element-plus": "^2.5.0"
+  }
+}
+```
+
+### 6.2 electron-builder.json配置
+```json
+{
+  "appId": "com.activiti.tools",
+  "productName": "Activiti Tools",
+  "directories": { "output": "build" },
+  "files": ["src/**/*", "package.json"],
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] }
+    ]
+  },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+}
+```
+
+### 6.3 主进程（main.js）
+```javascript
+const { app, BrowserWindow, ipcMain } = require('electron')
+const path = require('path')
+
+let mainWindow
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200, height: 800,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true
+    }
+  })
+  
+  if (process.env.NODE_ENV === 'dev') {
+    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.webContents.openDevTools()
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  }
+}
+
+app.whenReady().then(createWindow)
+
+// IPC处理
+ipcMain.handle('test-connection', async (event, config) => {
+  // 测试数据库连接
+})
+
+ipcMain.handle('list-instances', async (event, page, size, keyword) => {
+  // 查询流程实例
+})
+```
+
+### 6.4 预加载脚本（preload.js）
+```javascript
+const { contextBridge, ipcRenderer } = require('electron')
+
+contextBridge.exposeInMainWorld('api', {
+  testConnection: (config) => ipcRenderer.invoke('test-connection', config),
+  listInstances: (page, size, keyword) => ipcRenderer.invoke('list-instances', page, size, keyword),
+  getInstance: (id) => ipcRenderer.invoke('get-instance', id),
+  // ... 更多方法
+})
+```
+
+---
+
+## 七、Node.js方案B详细实现（pkg+浏览器）
+
+### 7.1 package.json配置
+```json
+{
+  "name": "activiti-tools",
+  "version": "1.0.0",
+  "bin": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "build": "pkg . --targets node18-win-x64 --output build/activiti-tools.exe"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "better-sqlite3": "^9.0.0",
+    "mysql2": "^3.6.0",
+    "pg": "^8.11.0",
+    "open": "^9.0.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.0"
+  },
+  "pkg": {
+    "assets": ["src/public/**/*"],
+    "targets": ["node18-win-x64"],
+    "outputPath": "build"
+  }
+}
+```
+
+### 7.2 服务器（server.js）
+```javascript
+const express = require('express')
+const path = require('path')
+const open = require('open')
+
+const app = express()
+const PORT = 34567
+
+// 静态文件
+app.use(express.static(path.join(__dirname, 'public')))
+app.use(express.json())
+
+// API路由
+app.post('/api/connect', async (req, res) => { /* ... */ })
+app.get('/api/instances', async (req, res) => { /* ... */ })
+// ... 更多API
+
+// 启动服务器并打开浏览器
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`)
+  open(`http://localhost:${PORT}`)
+})
+```
+
+---
+
+## 八、推荐选择
+
+| 你的情况 | 推荐方案 |
+|----------|----------|
+| 前端开发者，熟悉Vue/React | **方案A（Electron）** |
+| 希望体积尽量小，愿意学Go | **方案C（Go+Wails）** |
+| 折中方案，体积适中 | **方案B（pkg+浏览器）** |
+
+---
+
+## 以下为Go方案内容（保留参考）
+
+### 项目结构
 ```
 /workspace/
 ├── main.go               # 入口文件
@@ -56,7 +322,7 @@
 └── wails.json            # Wails配置
 ```
 
-## 三、核心功能设计（Go版本）
+## 九、核心功能设计（Go版本，Node.js同理）
 
 ### 3.1 数据库连接模块
 
