@@ -336,7 +336,7 @@ async function showInstanceDetail(instanceId) {
                 <div class="info-item"><label>流程Key</label><span>${instance.procDefKey || '-'}</span></div>
                 <div class="info-item"><label>业务Key</label><span>${instance.businessKey || '-'}</span></div>
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
-                <div class="info-item"><label>开始用户</label><span>${instance.startUserId || '-'}</span></div>
+                <div class="info-item"><label>开始用户</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
             </div>
         </div>
         
@@ -350,7 +350,7 @@ async function showInstanceDetail(instanceId) {
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assignee || '-'}</td>
+                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
                                 <td>${new Date(t.createTime).toLocaleString()}</td>
                             </tr>
                         `).join('')}
@@ -407,7 +407,7 @@ async function showInstanceDetail(instanceId) {
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assignee || '-'}</td>
+                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                             </tr>

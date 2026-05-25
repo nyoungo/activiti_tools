@@ -603,11 +603,18 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
 
 async function getHistoryTasks(db, dbType, instanceId) {
     let sql = `
-        SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, 
-               START_TIME_ as startTime, END_TIME_ as endTime
-        FROM ACT_HI_TASKINST
-        WHERE PROC_INST_ID_ = ?
-        ORDER BY START_TIME_ DESC
+        SELECT 
+            t.ID_ as id, 
+            t.NAME_ as name, 
+            t.ASSIGNEE_ as assignee, 
+            t.START_TIME_ as startTime, 
+            t.END_TIME_ as endTime,
+            su.username as assigneeName,
+            su.realname as assigneeRealname
+        FROM ACT_HI_TASKINST t
+        LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+        WHERE t.PROC_INST_ID_ = ?
+        ORDER BY t.START_TIME_ DESC
     `
     if (dbType === 'postgres') {
         sql = sql.replace(/\?/, '$1')
