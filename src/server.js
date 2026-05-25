@@ -9,7 +9,16 @@ const initSqlJs = require('sql.js')
 
 const app = express()
 const PORT = 34567
-const CONFIG_DB_PATH = path.join(__dirname, '..', 'config.db')
+
+// 获取应用根目录（处理 pkg 打包后的路径）
+function getAppRoot() {
+    if (process.pkg) {
+        return path.dirname(process.execPath)
+    }
+    return path.join(__dirname, '..')
+}
+
+const CONFIG_DB_PATH = path.join(getAppRoot(), 'config.db')
 
 let activitiDb = null
 let dbConfig = null
@@ -17,7 +26,15 @@ let localDb = null
 
 app.use(cors())
 app.use(express.json())
-app.use(express.static(path.join(__dirname, 'public')))
+
+// 处理静态资源路径
+function getPublicPath() {
+    if (process.pkg) {
+        return path.join(path.dirname(process.execPath), 'public')
+    }
+    return path.join(__dirname, 'public')
+}
+app.use(express.static(getPublicPath()))
 
 async function initLocalDb() {
     const SQL = await initSqlJs()
@@ -573,8 +590,11 @@ async function start() {
     await initLocalDb()
     
     app.listen(PORT, () => {
-        console.log(`Activiti Tools 已启动: http://localhost:${PORT}`)
-        console.log('按 Ctrl+C 停止服务器')
+        console.log(`============================================`)
+        console.log(`  Activiti Tools 已启动`)
+        console.log(`  访问地址: http://localhost:${PORT}`)
+        console.log(`  按 Ctrl+C 停止服务器`)
+        console.log(`============================================`)
         openBrowser(`http://localhost:${PORT}`)
     })
 }
