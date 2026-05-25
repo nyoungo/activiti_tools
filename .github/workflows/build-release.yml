@@ -12,9 +12,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -29,29 +26,21 @@ jobs:
         run: |
           npm run build:win
 
-      - name: Prepare Releases Branch
+      - name: Create and Push Releases Branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
+          $repoUrl = "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           
-          $branchName = "releases"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
           
-          if (git ls-remote --heads origin $branchName) {
-              git fetch origin $branchName
-              git worktree add releases origin/$branchName
-          } else {
-              mkdir releases
-          }
+          mkdir temp-releases
+          cd temp-releases
           
-          Copy-Item -Path build/activiti-tools.exe -Destination releases/ -Force
-
-      - name: Push to Releases Branch
-        uses: ad-m/github-push-action@master
-        with:
-          branch: releases
-          directory: releases
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          force: true
-          message: "Update release binary ${{ github.ref_name }}"
+          git init
+          Copy-Item -Path ../build/activiti-tools.exe -Destination . -Force
+          git add activiti-tools.exe
+          git commit -m "Update release binary ${{ github.ref_name }}"
+          git branch -M releases
+          git push -f $repoUrl releases
