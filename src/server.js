@@ -532,7 +532,6 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     }
     
     for (const inst of instances) {
-        inst.isFinished = false
         let taskSql = `
             SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
             FROM ACT_RU_TASK
@@ -547,6 +546,26 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
         } else {
             const result = await db.query(taskSql, [inst.id])
             inst.currentTasks = result.rows
+        }
+        
+        inst.isFinished = inst.currentTasks.length === 0
+        
+        if (!inst.isFinished) {
+            let historySql = `
+                SELECT END_TIME_ 
+                FROM ACT_HI_PROCINST 
+                WHERE PROC_INST_ID_ = ?
+            `
+            if (dbType === 'postgres') {
+                historySql = historySql.replace(/\?/, '$1')
+            }
+            if (dbType === 'mysql') {
+                const [rows] = await db.execute(historySql, [inst.id])
+                inst.isFinished = rows.length > 0 && rows[0].END_TIME_ !== null
+            } else {
+                const result = await db.query(historySql, [inst.id])
+                inst.isFinished = result.rows.length > 0 && result.rows[0].END_TIME_ !== null
+            }
         }
     }
     
