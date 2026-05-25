@@ -1021,20 +1021,39 @@ async function setTaskAssignee(db, dbType, taskId, assignee) {
 }
 
 async function addTaskIdentityLink(db, dbType, taskId, userId, type) {
-    const id = `${taskId}-${userId}-${type}`
+    let idSql
     let sql
+    let params
+    
     if (dbType === 'mysql') {
+        idSql = 'SELECT UUID() as id'
         sql = `
             INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
             VALUES (?, 1, ?, ?, NULL, ?, NULL, NULL)
         `
-        await db.execute(sql, [id, type, userId, taskId])
     } else {
+        idSql = 'SELECT gen_random_uuid() as id'
         sql = `
             INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
             VALUES ($1, 1, $2, $3, NULL, $4, NULL, NULL)
         `
-        await db.query(sql, [id, type, userId, taskId])
+    }
+    
+    let idResult
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(idSql)
+        idResult = rows[0].id
+    } else {
+        const result = await db.query(idSql)
+        idResult = result.rows[0].id
+    }
+    
+    params = [idResult, type, userId, taskId]
+    
+    if (dbType === 'mysql') {
+        await db.execute(sql, params)
+    } else {
+        await db.query(sql, params)
     }
 }
 
