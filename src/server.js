@@ -189,6 +189,24 @@ app.get('/api/instances', async (req, res) => {
     }
 })
 
+app.get('/api/finished-instances', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const page = parseInt(req.query.page) || 1
+        const size = parseInt(req.query.size) || 10
+        const keyword = req.query.keyword || ''
+        const offset = (page - 1) * size
+        
+        const result = await getFinishedProcessInstances(activitiDb, dbConfig.dbType, offset, size, keyword)
+        res.json(result)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -510,6 +528,7 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     }
     
     for (const inst of instances) {
+        inst.isFinished = false
         let taskSql = `
             SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
             FROM ACT_RU_TASK
@@ -549,6 +568,8 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
     `
     
     let instance
+    let isFinished = false
+    
     if (dbType === 'mysql') {
         const [rows] = await db.execute(sql, [instanceId])
         instance = rows[0]
@@ -558,7 +579,41 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         instance = result.rows[0]
     }
     
+    if (!instance) {
+        let historySql = `
+            SELECT 
+                h.ID_ as id,
+                h.PROC_DEF_ID_ as procDefId,
+                pd.NAME_ as procDefName,
+                pd.KEY_ as procDefKey,
+                h.START_TIME_ as startTime,
+                h.START_USER_ID_ as startUserId,
+                h.BUSINESS_KEY_ as businessKey,
+                h.END_TIME_ as endTime,
+                su.username as startUserName,
+                su.realname as startUserRealname
+            FROM ACT_HI_PROCINST h
+            LEFT JOIN ACT_RE_PROCDEF pd ON h.PROC_DEF_ID_ = pd.ID_
+            LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id
+            WHERE h.ID_ = ?
+        `
+        if (dbType === 'mysql') {
+            const [rows] = await db.execute(historySql, [instanceId])
+            instance = rows[0]
+        } else {
+            historySql = historySql.replace(/\?/, '$1')
+            const result = await db.query(historySql, [instanceId])
+            instance = result.rows[0]
+        }
+        
+        if (instance) {
+            isFinished = true
+        }
+    }
+    
     if (instance) {
+        instance.isFinished = isFinished
+        
         let taskSql = `
             SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
             FROM ACT_RU_TASK
@@ -577,6 +632,77 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
     }
     
     return instance
+}
+
+async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
+    let sql = `
+        SELECT 
+            h.ID_ as id,
+            h.PROC_DEF_ID_ as procDefId,
+            pd.NAME_ as procDefName,
+            pd.KEY_ as procDefKey,
+            h.START_TIME_ as startTime,
+            h.END_TIME_ as endTime,
+            h.START_USER_ID_ as startUserId,
+            h.BUSINESS_KEY_ as businessKey,
+            su.username as startUserName,
+            su.realname as startUserRealname
+        FROM ACT_HI_PROCINST h
+        LEFT JOIN ACT_RE_PROCDEF pd ON h.PROC_DEF_ID_ = pd.ID_
+        LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id
+        WHERE h.END_TIME_ IS NOT NULL
+    `
+    const params = []
+    
+    if (keyword) {
+        const kw = `%${keyword}%`
+        if (dbType === 'mysql') {
+            sql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR h.BUSINESS_KEY_ LIKE ?)'
+            params.push(kw, kw, kw)
+        } else {
+            sql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR h.BUSINESS_KEY_ ILIKE $1)'
+            params.push(kw)
+        }
+    }
+    
+    sql += ' ORDER BY h.END_TIME_ DESC'
+    
+    let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
+    if (countSql.includes('ORDER BY')) {
+        countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
+    }
+    
+    let total
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(countSql, params)
+        total = rows[0]?.total || 0
+    } else {
+        const result = await db.query(countSql, params)
+        total = parseInt(result.rows[0]?.total || 0)
+    }
+    
+    if (dbType === 'mysql') {
+        sql += ' LIMIT ? OFFSET ?'
+        params.push(size, offset)
+    } else {
+        sql += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+        params.push(size, offset)
+    }
+    
+    let instances
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, params)
+        instances = rows
+    } else {
+        const result = await db.query(sql, params)
+        instances = result.rows
+    }
+    
+    for (const inst of instances) {
+        inst.isFinished = true
+    }
+    
+    return { instances, total }
 }
 
 async function getProcessVariables(db, dbType, instanceId) {

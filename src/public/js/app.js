@@ -11,6 +11,9 @@ const api = {
     async post(url, data) {
         return this.request(url, { method: 'POST', body: JSON.stringify(data) })
     },
+    async put(url, data) {
+        return this.request(url, { method: 'PUT', body: JSON.stringify(data) })
+    },
     async delete(url) {
         return this.request(url, { method: 'DELETE' })
     }
@@ -22,7 +25,10 @@ const state = {
     currentPage: 1,
     pageSize: 10,
     searchKeyword: '',
-    currentInstanceId: null
+    currentInstanceId: null,
+    instanceTab: 'running',
+    currentDefinitionId: null,
+    originalXml: null
 }
 
 // DOM 元素
@@ -55,6 +61,7 @@ const elements = {
     instanceModalBody: document.getElementById('instanceModalBody'),
     xmlModal: document.getElementById('xmlModal'),
     xmlContent: document.getElementById('xmlContent'),
+    xmlActions: document.getElementById('xmlActions'),
     assigneeModal: document.getElementById('assigneeModal'),
     assigneeTaskId: document.getElementById('assigneeTaskId'),
     assigneeTaskName: document.getElementById('assigneeTaskName'),
@@ -62,7 +69,11 @@ const elements = {
     newAssignee: document.getElementById('newAssignee'),
     candidateUserId: document.getElementById('candidateUserId'),
     candidateType: document.getElementById('candidateType'),
-    identityLinkList: document.getElementById('identityLinkList')
+    identityLinkList: document.getElementById('identityLinkList'),
+    returnTaskModal: document.getElementById('returnTaskModal'),
+    returnCurrentTask: document.getElementById('returnCurrentTask'),
+    returnTargetTask: document.getElementById('returnTargetTask'),
+    returnReason: document.getElementById('returnReason')
 }
 
 // 初始化
@@ -129,12 +140,24 @@ function bindEvents() {
     // 模态框关闭
     document.querySelectorAll('.modal-close').forEach(btn => {
         btn.addEventListener('click', () => {
-            btn.closest('.modal').classList.remove('show')
+            const modal = btn.closest('.modal')
+            if (modal) modal.classList.remove('show')
         })
     })
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', (e) => {
             if (e.target === modal) modal.classList.remove('show')
+        })
+    })
+
+    // 标签页切换
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'))
+            btn.classList.add('active')
+            state.instanceTab = btn.dataset.tab
+            state.currentPage = 1
+            loadInstances()
         })
     })
 }
@@ -147,7 +170,7 @@ function switchPage(page) {
     elements.pages.forEach(p => {
         p.classList.toggle('active', p.id === `page-${page}`)
     })
-    
+
     if (page === 'instances' && state.connected) {
         loadInstances()
     } else if (page === 'definitions' && state.connected) {
@@ -160,6 +183,10 @@ async function checkConnectionStatus() {
     const result = await api.get('/api/connection-status')
     state.connected = result.connected
     updateConnectionStatus()
+
+    if (state.connected) {
+        switchPage('instances')
+    }
 }
 
 // 更新连接状态显示
@@ -246,7 +273,7 @@ async function deleteCurrentConnection() {
     const id = elements.savedConnections.value
     if (!id) return
     if (!confirm('确定删除此配置吗？')) return
-    
+
     await api.delete(`/api/connections/${id}`)
     showMessage(elements.connectionMessage, '配置已删除', 'success')
     await loadConnections()
@@ -272,35 +299,36 @@ async function disconnectFromDb() {
     await api.post('/api/disconnect')
     state.connected = false
     updateConnectionStatus()
-    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">请先连接数据库</td></tr>'
-    elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">请先连接数据库</td></tr>'
+    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">请连接数据库</td></tr>'
+    elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
+    switchPage('connection')
 }
 
 // 加载流程实例
 async function loadInstances() {
     if (!state.connected) return
-    
-    const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}`)
-    
+
+    const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}&status=${state.instanceTab}`)
+
     if (!result || (!result.instances && !result.error)) {
         elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">加载数据失败</td></tr>'
         elements.pagination.innerHTML = ''
         return
     }
-    
+
     const instances = result.instances || []
-    
+
     if (instances.length > 0) {
         elements.instancesTableBody.innerHTML = instances.map(inst => `
             <tr>
                 <td><code>${inst.id}</code></td>
                 <td>${inst.procDefName || '-'}</td>
-                <td>${inst.procDefKey || '-'}</td>
                 <td>${inst.businessKey || '-'}</td>
+                <td>${inst.startUserRealname || inst.startUserName || inst.startUserId || '-'}</td>
                 <td>${new Date(inst.startTime).toLocaleString()}</td>
-                <td>${(inst.currentTasks || []).map(t => `<span class="tag">${t.name}</span>`).join(' ') || '-'}</td>
+                <td><span class="status-tag ${inst.isFinished ? 'status-finished' : 'status-running'}">${inst.isFinished ? '已结束' : '运行中'}</span></td>
                 <td>
-                    <button class="btn btn-small btn-primary" onclick="showInstanceDetail('${inst.id}')">详情</button>
+                    <button class="btn btn-small btn-primary" onclick="showInstanceDetail('${inst.id}', ${inst.isFinished})">详情</button>
                 </td>
             </tr>
         `).join('')
@@ -318,9 +346,9 @@ function renderPagination(total) {
         elements.pagination.innerHTML = ''
         return
     }
-    
+
     let html = `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
-    
+
     for (let i = 1; i <= totalPages; i++) {
         if (i === 1 || i === totalPages || (i >= state.currentPage - 2 && i <= state.currentPage + 2)) {
             html += `<button class="${i === state.currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`
@@ -328,7 +356,7 @@ function renderPagination(total) {
             html += '<span>...</span>'
         }
     }
-    
+
     html += `<button onclick="goToPage(${state.currentPage + 1})" ${state.currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`
     elements.pagination.innerHTML = html
 }
@@ -341,28 +369,35 @@ async function goToPage(page) {
 }
 
 // 显示流程实例详情
-async function showInstanceDetail(instanceId) {
+async function showInstanceDetail(instanceId, isFinished = false) {
     state.currentInstanceId = instanceId
-    
+
     const [instance, variables, historyTasks] = await Promise.all([
         api.get(`/api/instances/${instanceId}`),
         api.get(`/api/instances/${instanceId}/variables`),
         api.get(`/api/instances/${instanceId}/history-tasks`)
     ])
-    
+
+    const finishedClass = instance.isFinished ? 'status-finished' : 'status-running'
+    const statusText = instance.isFinished ? '已结束' : '运行中'
+
     elements.instanceModalBody.innerHTML = `
         <div class="detail-section">
             <h4>基本信息</h4>
             <div class="info-grid">
                 <div class="info-item"><label>实例ID</label><span><code>${instance.id}</code></span></div>
                 <div class="info-item"><label>流程名称</label><span>${instance.procDefName || '-'}</span></div>
-                <div class="info-item"><label>流程Key</label><span>${instance.procDefKey || '-'}</span></div>
                 <div class="info-item"><label>业务Key</label><span>${instance.businessKey || '-'}</span></div>
+                <div class="info-item"><label>状态</label><span><span class="status-tag ${finishedClass}">${statusText}</span></span></div>
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
-                <div class="info-item"><label>开始用户</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
+                <div class="info-item"><label>发起人</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
+            </div>
+            <div style="margin-top: 16px;">
+                <button class="btn btn-secondary btn-small" onclick="viewDefinitionXml('${instance.procDefId}')">查看流程图</button>
+                ${!isFinished ? '<button class="btn btn-secondary btn-small" onclick="editDefinitionXml(\'' + instance.procDefId + '\')">修改流程图</button>' : ''}
             </div>
         </div>
-        
+
         <div class="detail-section">
             <h4>当前任务</h4>
             ${(instance.currentTasks || []).length > 0 ? `
@@ -384,7 +419,7 @@ async function showInstanceDetail(instanceId) {
                 </table>
             ` : '<p class="text-center">暂无当前任务</p>'}
         </div>
-        
+
         <div class="detail-section">
             <h4>流程变量</h4>
             <table class="variable-table">
@@ -422,7 +457,7 @@ async function showInstanceDetail(instanceId) {
                 <button class="btn btn-primary" onclick="addVariable()">添加</button>
             </div>
         </div>
-        
+
         <div class="detail-section">
             <h4>历史任务</h4>
             ${historyTasks.length > 0 ? `
@@ -437,7 +472,7 @@ async function showInstanceDetail(instanceId) {
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                                 <td>
-                                    <button class="btn btn-small btn-primary" onclick="jumpToTask('${instanceId}', '${t.id}')">跳转到此处</button>
+                                    ${!isFinished ? '<button class="btn btn-small btn-danger" onclick="openReturnTaskModal(\'' + t.id + '\', \'' + (t.name || t.id) + '\')">退回此处</button>' : ''}
                                 </td>
                             </tr>
                         `).join('')}
@@ -446,8 +481,13 @@ async function showInstanceDetail(instanceId) {
             ` : '<p class="text-center">暂无历史任务</p>'}
         </div>
     `
-    
+
     elements.instanceModal.classList.add('show')
+}
+
+// 关闭实例详情模态框
+function closeInstanceModal() {
+    elements.instanceModal.classList.remove('show')
 }
 
 // 添加变量
@@ -455,17 +495,17 @@ async function addVariable() {
     const name = document.getElementById('newVarName').value.trim()
     const type = document.getElementById('newVarType').value
     const value = document.getElementById('newVarValue').value
-    
+
     if (!name) {
         alert('请输入变量名')
         return
     }
-    
+
     await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
-    
+
     document.getElementById('newVarName').value = ''
     document.getElementById('newVarValue').value = ''
-    
+
     showInstanceDetail(state.currentInstanceId)
 }
 
@@ -473,7 +513,7 @@ async function addVariable() {
 async function saveVariable(name) {
     const type = document.querySelector(`#variableTableBody tr[data-name="${name}"] select`).value
     const value = document.getElementById(`var-${name}`).value
-    
+
     await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
     alert('变量保存成功')
 }
@@ -485,21 +525,66 @@ async function deleteVariable(name) {
     showInstanceDetail(state.currentInstanceId)
 }
 
+// 查看流程定义XML
+async function viewDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = true
+    elements.xmlActions.style.display = 'none'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+    elements.xmlModal.classList.add('show')
+}
+
+// 编辑流程定义XML
+async function editDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = false
+    elements.xmlActions.style.display = 'block'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+    elements.xmlModal.classList.add('show')
+}
+
+// 保存XML
+async function saveXml() {
+    const xml = elements.xmlContent.value
+    if (!xml.trim()) {
+        alert('XML内容不能为空')
+        return
+    }
+
+    const result = await api.put(`/api/definitions/${state.currentDefinitionId}/xml`, { xml })
+
+    if (result.success) {
+        alert('保存成功')
+        state.originalXml = xml
+    } else {
+        alert('保存失败: ' + result.error)
+    }
+}
+
+// 重置XML
+function resetXml() {
+    elements.xmlContent.value = state.originalXml
+}
+
 // 加载流程定义
 async function loadDefinitions() {
     if (!state.connected) {
         elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">请先连接数据库</td></tr>'
         return
     }
-    
+
     try {
         const definitions = await api.get('/api/definitions')
-        
+
         if (!definitions || (Array.isArray(definitions) && definitions.length === 0)) {
             elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
             return
         }
-        
+
         if (Array.isArray(definitions) && definitions.length > 0) {
             elements.definitionsTableBody.innerHTML = definitions.map(def => `
                 <tr>
@@ -508,8 +593,8 @@ async function loadDefinitions() {
                     <td>${def.name || '-'}</td>
                     <td>${def.version}</td>
                     <td>
-                        <button class="btn btn-small btn-primary" onclick="showDefinitionXml('${def.id}', 'view')">查看XML</button>
-                        <button class="btn btn-small btn-secondary" onclick="showDefinitionXml('${def.id}', 'edit')">修改XML</button>
+                        <button class="btn btn-small btn-primary" onclick="viewDefinitionXml('${def.id}')">查看</button>
+                        <button class="btn btn-small btn-secondary" onclick="editDefinitionXml('${def.id}')">修改</button>
                     </td>
                 </tr>
             `).join('')
@@ -520,67 +605,56 @@ async function loadDefinitions() {
     }
 }
 
-// 显示流程定义XML
-async function showDefinitionXml(defId, mode = 'view') {
-    const result = await api.get(`/api/definitions/${defId}/xml`)
-    elements.xmlContent.value = result.xml || ''
-    elements.xmlContent.readOnly = mode === 'view'
-    elements.xmlModal.classList.add('show')
-    
-    if (mode === 'edit') {
-        const modalBody = elements.xmlModal.querySelector('.modal-body')
-        let saveBtn = modalBody.querySelector('#saveXmlBtn')
-        if (!saveBtn) {
-            saveBtn = document.createElement('button')
-            saveBtn.id = 'saveXmlBtn'
-            saveBtn.className = 'btn btn-primary'
-            saveBtn.textContent = '保存修改'
-            saveBtn.style.marginTop = '12px'
-            saveBtn.onclick = () => saveDefinitionXml(defId)
-            modalBody.appendChild(saveBtn)
-        } else {
-            saveBtn.style.display = 'block'
-        }
-    }
+// 退回任务模态框
+let currentReturnTaskId = null
+
+async function openReturnTaskModal(taskId, taskName) {
+    currentReturnTaskId = taskId
+    elements.returnCurrentTask.value = `${taskId} - ${taskName}`
+
+    // 加载历史任务列表
+    const historyTasks = await api.get(`/api/instances/${state.currentInstanceId}/history-tasks`)
+
+    elements.returnTargetTask.innerHTML = '<option value="">-- 选择退回节点 --</option>'
+    historyTasks.forEach(t => {
+        const option = document.createElement('option')
+        option.value = t.id
+        option.textContent = `${t.id} - ${t.name || '未命名'}`
+        elements.returnTargetTask.appendChild(option)
+    })
+
+    elements.returnReason.value = ''
+    elements.returnTaskModal.classList.add('show')
 }
 
-// 保存流程定义XML
-async function saveDefinitionXml(defId) {
-    const xml = elements.xmlContent.value
-    if (!xml.trim()) {
-        alert('XML内容不能为空')
+function closeReturnTaskModal() {
+    elements.returnTaskModal.classList.remove('show')
+    currentReturnTaskId = null
+}
+
+// 确认退回任务
+async function confirmReturnTask() {
+    const targetTaskId = elements.returnTargetTask.value
+    if (!targetTaskId) {
+        alert('请选择要退回到的节点')
         return
     }
-    
-    const result = await api.request(`/api/definitions/${defId}/xml`, {
-        method: 'PUT',
-        body: JSON.stringify({ xml })
-    })
-    
-    if (result.success) {
-        alert('保存成功')
-        elements.xmlModal.classList.remove('show')
-        loadDefinitions()
-    } else {
-        alert('保存失败: ' + result.error)
-    }
-}
 
-// 跳转到历史任务
-async function jumpToTask(instanceId, taskId) {
-    if (!confirm('确定要跳转到此历史任务吗？这将会重置流程状态。')) return
-    
-    const result = await api.post(`/api/instances/${instanceId}/jump-to-task`, { taskId })
-    
+    if (!confirm('确定要退回到此节点吗？这将重置流程状态。')) return
+
+    const result = await api.post(`/api/instances/${state.currentInstanceId}/jump-to-task`, { taskId: targetTaskId })
+
     if (result.success) {
-        alert('跳转成功')
-        elements.instanceModal.classList.remove('show')
+        alert('退回成功')
+        closeReturnTaskModal()
+        closeInstanceModal()
         loadInstances()
     } else {
-        alert('跳转失败: ' + result.error)
+        alert('退回失败: ' + result.error)
     }
 }
 
+// 审批人设置相关
 let currentTaskId = null
 
 async function openAssigneeModal(taskId, taskName, currentAssignee) {
@@ -590,14 +664,14 @@ async function openAssigneeModal(taskId, taskName, currentAssignee) {
     elements.currentAssignee.value = currentAssignee || '无'
     elements.newAssignee.value = ''
     elements.candidateUserId.value = ''
-    
+
     await loadIdentityLinks(taskId)
     elements.assigneeModal.classList.add('show')
 }
 
 async function loadIdentityLinks(taskId) {
     const identitylinks = await api.get(`/api/tasks/${taskId}/identitylinks`)
-    
+
     if (identitylinks && identitylinks.length > 0) {
         elements.identityLinkList.innerHTML = identitylinks.map(link => `
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; border-bottom: 1px solid #eee;">
@@ -612,19 +686,20 @@ async function loadIdentityLinks(taskId) {
 
 async function saveAssignee() {
     const newAssignee = elements.newAssignee.value.trim()
-    
+
     if (!newAssignee) {
         alert('请输入审批人ID')
         return
     }
-    
+
     const result = await api.post(`/api/tasks/${currentTaskId}/set-assignee`, { assignee: newAssignee })
-    
+
     if (result.success) {
         alert('审批人设置成功')
         elements.currentAssignee.value = newAssignee
         elements.newAssignee.value = ''
         await loadIdentityLinks(currentTaskId)
+        showInstanceDetail(state.currentInstanceId)
     } else {
         alert('设置失败: ' + result.error)
     }
@@ -633,14 +708,14 @@ async function saveAssignee() {
 async function addCandidate() {
     const userId = elements.candidateUserId.value.trim()
     const type = elements.candidateType.value
-    
+
     if (!userId) {
         alert('请输入用户ID')
         return
     }
-    
+
     const result = await api.post(`/api/tasks/${currentTaskId}/add-identitylink`, { userId, type })
-    
+
     if (result.success) {
         alert('添加成功')
         elements.candidateUserId.value = ''
@@ -652,12 +727,12 @@ async function addCandidate() {
 
 async function removeIdentityLink(userId, type) {
     if (!confirm(`确定删除用户 ${userId} 的身份链接吗？`)) return
-    
+
     const result = await api.request(`/api/tasks/${currentTaskId}/identitylink?userId=${userId}&type=${type}`, {
         method: 'DELETE',
         body: JSON.stringify({ userId, type })
     })
-    
+
     if (result.success) {
         alert('删除成功')
         await loadIdentityLinks(currentTaskId)
@@ -668,30 +743,16 @@ async function removeIdentityLink(userId, type) {
 
 async function refreshTaskInfo() {
     if (!currentTaskId) return
-    
+
     const instance = await api.get(`/api/instances/${state.currentInstanceId}`)
     const task = instance.currentTasks.find(t => t.id === currentTaskId)
-    
+
     if (task) {
         elements.currentAssignee.value = task.assignee || '无'
     }
-    
+
     await loadIdentityLinks(currentTaskId)
 }
-
-// 全局暴露函数
-window.goToPage = goToPage
-window.showInstanceDetail = showInstanceDetail
-window.jumpToTask = jumpToTask
-window.addVariable = addVariable
-window.saveVariable = saveVariable
-window.deleteVariable = deleteVariable
-window.showDefinitionXml = showDefinitionXml
-window.openAssigneeModal = openAssigneeModal
-window.saveAssignee = saveAssignee
-window.addCandidate = addCandidate
-window.removeIdentityLink = removeIdentityLink
-window.refreshTaskInfo = refreshTaskInfo
 
 // 启动应用
 init()
