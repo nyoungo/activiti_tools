@@ -365,7 +365,8 @@ app.delete('/api/tasks/:taskId/identitylink', async (req, res) => {
     }
     
     try {
-        const { userId, type } = req.body || {}
+        const userId = req.query.userId
+        const type = req.query.type
         await deleteTaskIdentityLink(activitiDb, dbConfig.dbType, req.params.taskId, userId, type)
         res.json({ success: true })
     } catch (error) {
@@ -533,9 +534,11 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     
     for (const inst of instances) {
         let taskSql = `
-            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-            FROM ACT_RU_TASK
-            WHERE PROC_INST_ID_ = ?
+            SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
+                   su.username as assigneeName, su.realname as assigneeRealname
+            FROM ACT_RU_TASK t
+            LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+            WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
             taskSql = taskSql.replace(/\?/, '$1')
@@ -638,9 +641,11 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         instance.isFinished = isFinished
         
         let taskSql = `
-            SELECT ID_ as id, NAME_ as name, ASSIGNEE_ as assignee, CREATE_TIME_ as createTime
-            FROM ACT_RU_TASK
-            WHERE PROC_INST_ID_ = ?
+            SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
+                   su.username as assigneeName, su.realname as assigneeRealname
+            FROM ACT_RU_TASK t
+            LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+            WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
             taskSql = taskSql.replace(/\?/, '$1')
@@ -863,9 +868,12 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
 
 async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     let sql = `
-        SELECT p.RESOURCE_ID_ as resourceId
+        SELECT b.ID_ as byteArrayId
         FROM ACT_RE_PROCDEF p
-        WHERE p.ID_ = ?
+        LEFT JOIN ACT_GE_BYTEARRAY b ON p.DEPLOYMENT_ID_ = b.DEPLOYMENT_ID_
+        WHERE p.ID_ = ? AND b.NAME_ LIKE '%.bpmn%'
+        ORDER BY b.ID_ DESC
+        LIMIT 1
     `
     
     let params = [definitionId]
@@ -883,10 +891,10 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     }
     
     if (rows.length === 0) {
-        throw new Error('流程定义不存在')
+        throw new Error('流程定义或BPMN文件不存在')
     }
     
-    const resourceId = rows[0].resourceId
+    const byteArrayId = rows[0].byteArrayId
     const bytes = Buffer.from(xml, 'utf8')
     
     let updateSql
@@ -897,9 +905,9 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     }
     
     if (dbType === 'mysql') {
-        await db.execute(updateSql, [bytes, resourceId])
+        await db.execute(updateSql, [bytes, byteArrayId])
     } else {
-        await db.query(updateSql, [bytes, resourceId])
+        await db.query(updateSql, [bytes, byteArrayId])
     }
 }
 
