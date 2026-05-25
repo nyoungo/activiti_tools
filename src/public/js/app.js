@@ -282,8 +282,16 @@ async function loadInstances() {
     
     const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}`)
     
-    if (result.instances && result.instances.length > 0) {
-        elements.instancesTableBody.innerHTML = result.instances.map(inst => `
+    if (!result || (!result.instances && !result.error)) {
+        elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">加载数据失败</td></tr>'
+        elements.pagination.innerHTML = ''
+        return
+    }
+    
+    const instances = result.instances || []
+    
+    if (instances.length > 0) {
+        elements.instancesTableBody.innerHTML = instances.map(inst => `
             <tr>
                 <td><code>${inst.id}</code></td>
                 <td>${inst.procDefName || '-'}</td>
@@ -296,7 +304,7 @@ async function loadInstances() {
                 </td>
             </tr>
         `).join('')
-        renderPagination(result.total)
+        renderPagination(result.total || 0)
     } else {
         elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">暂无数据</td></tr>'
         elements.pagination.innerHTML = ''
@@ -479,25 +487,36 @@ async function deleteVariable(name) {
 
 // 加载流程定义
 async function loadDefinitions() {
-    if (!state.connected) return
+    if (!state.connected) {
+        elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">请先连接数据库</td></tr>'
+        return
+    }
     
-    const definitions = await api.get('/api/definitions')
-    
-    if (definitions && definitions.length > 0) {
-        elements.definitionsTableBody.innerHTML = definitions.map(def => `
-            <tr>
-                <td><code>${def.id}</code></td>
-                <td>${def.key}</td>
-                <td>${def.name || '-'}</td>
-                <td>${def.version}</td>
-                <td>
-                    <button class="btn btn-small btn-primary" onclick="showDefinitionXml('${def.id}', 'view')">查看XML</button>
-                    <button class="btn btn-small btn-secondary" onclick="showDefinitionXml('${def.id}', 'edit')">修改XML</button>
-                </td>
-            </tr>
-        `).join('')
-    } else {
-        elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
+    try {
+        const definitions = await api.get('/api/definitions')
+        
+        if (!definitions || (Array.isArray(definitions) && definitions.length === 0)) {
+            elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
+            return
+        }
+        
+        if (Array.isArray(definitions) && definitions.length > 0) {
+            elements.definitionsTableBody.innerHTML = definitions.map(def => `
+                <tr>
+                    <td><code>${def.id}</code></td>
+                    <td>${def.key}</td>
+                    <td>${def.name || '-'}</td>
+                    <td>${def.version}</td>
+                    <td>
+                        <button class="btn btn-small btn-primary" onclick="showDefinitionXml('${def.id}', 'view')">查看XML</button>
+                        <button class="btn btn-small btn-secondary" onclick="showDefinitionXml('${def.id}', 'edit')">修改XML</button>
+                    </td>
+                </tr>
+            `).join('')
+        }
+    } catch (error) {
+        console.error('加载流程定义失败:', error)
+        elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">加载失败</td></tr>'
     }
 }
 
