@@ -24,6 +24,11 @@ let activitiDb = null
 let dbConfig = null
 let localDb = null
 
+// 用户缓存
+let cachedUsers = null
+let cacheTimestamp = 0
+const CACHE_DURATION = 300000 // 5分钟缓存
+
 app.use(cors())
 app.use(express.json())
 
@@ -170,11 +175,41 @@ app.post('/api/disconnect', (req, res) => {
     }
     activitiDb = null
     dbConfig = null
+    cachedUsers = null
+    cacheTimestamp = 0
     res.json({ success: true })
 })
 
 app.get('/api/connection-status', (req, res) => {
     res.json({ connected: !!activitiDb, config: dbConfig ? { ...dbConfig, password: undefined } : null })
+})
+
+app.get('/api/users', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const keyword = req.query.keyword || ''
+        let users = await getUsers(dbType = dbConfig.dbType, keyword)
+        res.json(users)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
+app.put('/api/history-tasks/:taskId/assignee', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { assignee, endTime } = req.body
+        await updateHistoryTaskAssignee(activitiDb, dbConfig.dbType, req.params.taskId, assignee, endTime)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
 })
 
 app.get('/api/instances', async (req, res) => {
@@ -1766,6 +1801,63 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
             WHERE il.TASK_ID_ = $1 AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
         `
         return await query(db, dbType, sql, [taskId])
+    }
+}
+
+async function getUsers(dbType, keyword = '') {
+    const now = Date.now()
+    
+    if (cachedUsers && now - cacheTimestamp < CACHE_DURATION) {
+        if (keyword) {
+            return cachedUsers.filter(u => 
+                u.username.toLowerCase().includes(keyword.toLowerCase()) ||
+                u.realname.toLowerCase().includes(keyword.toLowerCase())
+            )
+        }
+        return cachedUsers
+    }
+    
+    let sql
+    if (dbType === 'mysql') {
+        if (keyword) {
+            sql = `SELECT id, username, realname FROM sys_user WHERE username LIKE ? OR realname LIKE ? ORDER BY username`
+            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
+            cachedUsers = rows
+        } else {
+            sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
+            const rows = await query(activitiDb, dbType, sql, [])
+            cachedUsers = rows
+        }
+    } else {
+        if (keyword) {
+            sql = `SELECT id, username, realname FROM sys_user WHERE username ILIKE $1 OR realname ILIKE $2 ORDER BY username`
+            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
+            cachedUsers = rows
+        } else {
+            sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
+            const rows = await query(activitiDb, dbType, sql, [])
+            cachedUsers = rows
+        }
+    }
+    
+    cacheTimestamp = now
+    return cachedUsers
+}
+
+async function updateHistoryTaskAssignee(db, dbType, taskId, assignee, endTime) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = ?, END_TIME_ = ? WHERE ID_ = ?'
+        await db.execute(sql, [assignee, endTime, taskId])
+        
+        sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = ? WHERE TASK_ID_ = ? AND TYPE_ = \'assignee\''
+        await db.execute(sql, [assignee, taskId])
+    } else {
+        sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = $1, END_TIME_ = $2 WHERE ID_ = $3'
+        await db.query(sql, [assignee, endTime, taskId])
+        
+        sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = $1 WHERE TASK_ID_ = $2 AND TYPE_ = $3'
+        await db.query(sql, [assignee, taskId, 'assignee'])
     }
 }
 

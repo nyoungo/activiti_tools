@@ -466,6 +466,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                                 <td>
+                                    <button class="btn btn-small btn-primary" onclick="openEditHistoryTaskModal('${t.id}', '${t.name}', '${t.assignee || ''}', '${t.endTime || ''}')">编辑</button>
                                     <button class="btn btn-small btn-danger" onclick="returnToTask('${t.id}', '${t.name || t.id}', ${isFinished})">退回此处</button>
                                 </td>
                             </tr>
@@ -743,6 +744,144 @@ function resetXml() {
 // 关闭XML模态框
 function closeXmlModal() {
     elements.xmlModal.classList.remove('show')
+}
+
+// 用户缓存
+let cachedUsers = []
+let cacheTimestamp = 0
+const USER_CACHE_DURATION = 300000
+
+async function getUsers(keyword = '') {
+    const now = Date.now()
+    
+    if (cachedUsers.length > 0 && now - cacheTimestamp < USER_CACHE_DURATION) {
+        if (keyword) {
+            return cachedUsers.filter(u => 
+                u.username.toLowerCase().includes(keyword.toLowerCase()) ||
+                u.realname.toLowerCase().includes(keyword.toLowerCase())
+            )
+        }
+        return cachedUsers
+    }
+    
+    const users = await api.get(`/api/users?keyword=${encodeURIComponent(keyword)}`)
+    cachedUsers = users
+    cacheTimestamp = now
+    return users
+}
+
+async function searchUsers(input, callback) {
+    const keyword = input.value
+    const users = await getUsers(keyword)
+    
+    const dropdown = input.nextElementSibling
+    if (dropdown && dropdown.classList.contains('user-dropdown')) {
+        if (users.length > 0) {
+            dropdown.innerHTML = users.map(u => `
+                <div class="dropdown-item" onclick="selectUser('${u.id}', '${u.username}', '${u.realname}', '${input.id}')">
+                    ${u.realname || u.username} (${u.username})
+                </div>
+            `).join('')
+            dropdown.style.display = 'block'
+        } else {
+            dropdown.innerHTML = '<div class="dropdown-item">没有找到匹配的用户</div>'
+            dropdown.style.display = 'block'
+        }
+    }
+    
+    if (callback) callback(users)
+}
+
+function selectUser(userId, username, realname, inputId) {
+    const input = document.getElementById(inputId)
+    input.value = userId
+    input.setAttribute('data-username', username)
+    input.setAttribute('data-realname', realname)
+    
+    const dropdown = input.nextElementSibling
+    if (dropdown && dropdown.classList.contains('user-dropdown')) {
+        dropdown.style.display = 'none'
+    }
+}
+
+function clearUserSelection(inputId) {
+    const input = document.getElementById(inputId)
+    input.value = ''
+    input.removeAttribute('data-username')
+    input.removeAttribute('data-realname')
+    
+    const dropdown = input.nextElementSibling
+    if (dropdown && dropdown.classList.contains('user-dropdown')) {
+        dropdown.style.display = 'none'
+    }
+}
+
+function closeUserDropdowns() {
+    document.querySelectorAll('.user-dropdown').forEach(dropdown => {
+        dropdown.style.display = 'none'
+    })
+}
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.user-selector')) {
+        closeUserDropdowns()
+    }
+})
+
+// 编辑历史任务模态框
+let currentHistoryTaskId = null
+
+function openEditHistoryTaskModal(taskId, taskName, assignee, endTime) {
+    currentHistoryTaskId = taskId
+    
+    document.getElementById('editHistoryTaskName').value = taskName
+    document.getElementById('editHistoryAssignee').value = assignee
+    document.getElementById('editHistoryAssignee').setAttribute('data-realname', '')
+    
+    if (endTime) {
+        const date = new Date(endTime)
+        document.getElementById('editHistoryEndTime').value = date.toISOString().slice(0, 16)
+    } else {
+        document.getElementById('editHistoryEndTime').value = ''
+    }
+    
+    document.getElementById('editHistoryTaskModal').classList.add('show')
+}
+
+async function saveHistoryTaskEdit() {
+    if (!currentHistoryTaskId) return
+    
+    const assignee = document.getElementById('editHistoryAssignee').value
+    const endTime = document.getElementById('editHistoryEndTime').value
+    
+    if (!assignee) {
+        alert('请选择审批人')
+        return
+    }
+    
+    const result = await api.put(`/api/history-tasks/${currentHistoryTaskId}/assignee`, {
+        assignee,
+        endTime: endTime ? new Date(endTime).toISOString() : null
+    })
+    
+    if (result.success) {
+        alert('修改成功')
+        document.getElementById('editHistoryTaskModal').classList.remove('show')
+        showInstanceDetail(state.currentInstanceId)
+    } else {
+        alert('修改失败: ' + result.error)
+    }
+}
+
+function closeEditHistoryTaskModal() {
+    document.getElementById('editHistoryTaskModal').classList.remove('show')
+    currentHistoryTaskId = null
+}
+
+// 刷新用户缓存
+function refreshUserCache() {
+    cachedUsers = []
+    cacheTimestamp = 0
 }
 
 // 启动应用
