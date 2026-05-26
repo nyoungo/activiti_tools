@@ -1624,9 +1624,6 @@ async function deleteProcessInstance(db, dbType, instanceId) {
         sql = 'DELETE FROM ACT_RU_EVENT_SUBSCR WHERE PROC_INST_ID_ = ?'
         await db.execute(sql, [instanceId])
         
-        sql = 'DELETE FROM ACT_RU_INCIDENT WHERE PROC_INST_ID_ = ?'
-        await db.execute(sql, [instanceId])
-        
         sql = 'DELETE FROM ACT_HI_IDENTITYLINK WHERE PROC_INST_ID_ = ?'
         await db.execute(sql, [instanceId])
         
@@ -1667,9 +1664,6 @@ async function deleteProcessInstance(db, dbType, instanceId) {
         await db.query(sql, [instanceId])
         
         sql = 'DELETE FROM ACT_RU_EVENT_SUBSCR WHERE PROC_INST_ID_ = $1'
-        await db.query(sql, [instanceId])
-        
-        sql = 'DELETE FROM ACT_RU_INCIDENT WHERE PROC_INST_ID_ = $1'
         await db.query(sql, [instanceId])
         
         sql = 'DELETE FROM ACT_HI_IDENTITYLINK WHERE PROC_INST_ID_ = $1'
