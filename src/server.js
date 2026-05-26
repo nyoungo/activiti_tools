@@ -514,17 +514,26 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
     
     sql += ' ORDER BY e.START_TIME_ DESC'
     
-    let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
-    if (countSql.includes('ORDER BY')) {
-        countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
+    let countSql = 'SELECT COUNT(*) as total FROM ACT_RU_EXECUTION e LEFT JOIN ACT_RE_PROCDEF pd ON e.PROC_DEF_ID_ = pd.ID_ LEFT JOIN sys_user su ON e.START_USER_ID_ = su.id WHERE e.PARENT_ID_ IS NULL'
+    const countParams = []
+    
+    if (keyword) {
+        const kw = `%${keyword}%`
+        if (dbType === 'mysql') {
+            countSql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR e.BUSINESS_KEY_ LIKE ?)'
+            countParams.push(kw, kw, kw)
+        } else {
+            countSql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR e.BUSINESS_KEY_ ILIKE $1)'
+            countParams.push(kw)
+        }
     }
     
     let total
     if (dbType === 'mysql') {
-        const [rows] = await db.execute(countSql, params)
+        const [rows] = await db.execute(countSql, countParams)
         total = rows[0]?.total || 0
     } else {
-        const result = await db.query(countSql, params)
+        const result = await db.query(countSql, countParams)
         total = parseInt(result.rows[0]?.total || 0)
     }
     
@@ -708,17 +717,26 @@ async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
     
     sql += ' ORDER BY h.END_TIME_ DESC'
     
-    let countSql = sql.replace(/^SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM')
-    if (countSql.includes('ORDER BY')) {
-        countSql = countSql.substring(0, countSql.indexOf('ORDER BY'))
+    let countSql = 'SELECT COUNT(*) as total FROM ACT_HI_PROCINST h LEFT JOIN ACT_RE_PROCDEF pd ON h.PROC_DEF_ID_ = pd.ID_ LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id WHERE h.END_TIME_ IS NOT NULL'
+    const countParams = []
+    
+    if (keyword) {
+        const kw = `%${keyword}%`
+        if (dbType === 'mysql') {
+            countSql += ' AND (pd.NAME_ LIKE ? OR pd.KEY_ LIKE ? OR h.BUSINESS_KEY_ LIKE ?)'
+            countParams.push(kw, kw, kw)
+        } else {
+            countSql += ' AND (pd.NAME_ ILIKE $1 OR pd.KEY_ ILIKE $1 OR h.BUSINESS_KEY_ ILIKE $1)'
+            countParams.push(kw)
+        }
     }
     
     let total
     if (dbType === 'mysql') {
-        const [rows] = await db.execute(countSql, params)
+        const [rows] = await db.execute(countSql, countParams)
         total = rows[0]?.total || 0
     } else {
-        const result = await db.query(countSql, params)
+        const result = await db.query(countSql, countParams)
         total = parseInt(result.rows[0]?.total || 0)
     }
     
