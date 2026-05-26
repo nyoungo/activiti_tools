@@ -458,7 +458,7 @@ async function testConnection(config) {
                 database: config.database
             }
             if (config.schema) {
-                poolConfig.options = `-c search_path=${config.schema}`
+                poolConfig.searchPath = config.schema
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
@@ -489,7 +489,7 @@ async function createConnection(config) {
             database: config.database
         }
         if (config.schema) {
-            poolConfig.options = `-c search_path=${config.schema}`
+            poolConfig.searchPath = config.schema
         }
         return new Pool(poolConfig)
     }
@@ -520,13 +520,23 @@ function convertToCamelCase(obj) {
     return obj
 }
 
+// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名和列名加上双引号
+function quotePostgresIdentifiers(sql) {
+    // 给Activiti表名加上双引号（ACT_开头的表）
+    sql = sql.replace(/\b(ACT_\w+)\b/g, '"$1"')
+    // 给Activiti列名加上双引号（以_结尾的列名）
+    sql = sql.replace(/\.(\w+_)\b/g, '."$1"')
+    return sql
+}
+
 // 内部查询函数，返回驼峰命名法的字段名
 async function queryWithCamelCase(db, dbType, sql, params = []) {
     if (dbType === 'mysql') {
         const [rows] = await db.execute(sql, params)
         return rows
     } else {
-        const result = await db.query(sql, params)
+        const quotedSql = quotePostgresIdentifiers(sql)
+        const result = await db.query(quotedSql, params)
         return convertToCamelCase(result.rows)
     }
 }
@@ -536,7 +546,8 @@ async function query(db, dbType, sql, params = []) {
         const [rows] = await db.execute(sql, params)
         return rows
     } else if (dbType === 'postgres' || dbType === 'hgdatabase') {
-        const result = await db.query(sql, params)
+        const quotedSql = quotePostgresIdentifiers(sql)
+        const result = await db.query(quotedSql, params)
         return convertToCamelCase(result.rows)
     }
 }
