@@ -520,38 +520,15 @@ function convertToCamelCase(obj) {
     return obj
 }
 
-// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名、列名和别名加上双引号
-function quotePostgresIdentifiers(sql) {
-    // 给Activiti表名加上双引号（ACT_开头的表）
-    sql = sql.replace(/\b(ACT_\w+)\b/g, '"$1"')
-    // 给Activiti列名加上双引号（以_结尾的列名）
-    sql = sql.replace(/\.(\w+_)\b/g, '."$1"')
-    // 给SQL中的别名加上双引号（AS后面的驼峰命名）
-    sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)\b/gi, 'AS "$1"')
-    return sql
-}
-
-// 内部查询函数，返回驼峰命名法的字段名
-async function queryWithCamelCase(db, dbType, sql, params = []) {
-    if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, params)
-        return rows
-    } else {
-        const quotedSql = quotePostgresIdentifiers(sql)
-        const result = await db.query(quotedSql, params)
-        return result.rows
-    }
-}
-
 async function query(db, dbType, sql, params = []) {
+    let rows
     if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, params)
-        return rows
-    } else if (dbType === 'postgres' || dbType === 'hgdatabase') {
-        const quotedSql = quotePostgresIdentifiers(sql)
-        const result = await db.query(quotedSql, params)
-        return result.rows
+        [rows] = await db.execute(sql, params)
+    } else {
+        const result = await db.query(sql, params)
+        rows = result.rows
     }
+    return convertToCamelCase(rows)
 }
 
 async function getProcessInstances(db, dbType, offset, size, keyword) {
@@ -1061,7 +1038,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, params)
         taskRows = result
     } else {
-        taskRows = await queryWithCamelCase(db, dbType, sql, params)
+        taskRows = await query(db, dbType, sql, params)
     }
     
     if (taskRows.length === 0) {
@@ -1078,7 +1055,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, [instanceId])
         allTaskRows = result
     } else {
-        allTaskRows = await queryWithCamelCase(db, dbType, sql, [instanceId])
+        allTaskRows = await query(db, dbType, sql, [instanceId])
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
@@ -1232,7 +1209,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
         `
-        const identityResult = await queryWithCamelCase(db, dbType, sql, [targetTaskId])
+        const identityResult = await query(db, dbType, sql, [targetTaskId])
         
         // 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
@@ -1277,7 +1254,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
         `
-        const varResult = await queryWithCamelCase(db, dbType, sql, [instanceId])
+        const varResult = await query(db, dbType, sql, [instanceId])
         
         for (const v of varResult) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
@@ -1358,7 +1335,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, params)
         taskRows = result
     } else {
-        taskRows = await queryWithCamelCase(db, dbType, sql, params)
+        taskRows = await query(db, dbType, sql, params)
     }
     
     if (taskRows.length === 0) {
@@ -1375,7 +1352,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, [instanceId])
         allTaskRows = result
     } else {
-        allTaskRows = await queryWithCamelCase(db, dbType, sql, [instanceId])
+        allTaskRows = await query(db, dbType, sql, [instanceId])
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
@@ -1520,7 +1497,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
         `
-        const identityResult = await queryWithCamelCase(db, dbType, sql, [targetTaskId])
+        const identityResult = await query(db, dbType, sql, [targetTaskId])
         
         // 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
@@ -1565,7 +1542,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
         `
-        const varResult = await queryWithCamelCase(db, dbType, sql, [instanceId])
+        const varResult = await query(db, dbType, sql, [instanceId])
         
         for (const v of varResult) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
