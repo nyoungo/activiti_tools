@@ -520,12 +520,20 @@ function convertToCamelCase(obj) {
     return obj
 }
 
+// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名和列名加上双引号（保持大写）
+function quotePostgresIdentifiers(sql) {
+    sql = sql.replace(/\b(ACT_\w+)\b/g, '"$1"')
+    sql = sql.replace(/\.(\w+_)\b/g, '."$1"')
+    return sql
+}
+
 async function query(db, dbType, sql, params = []) {
     let rows
     if (dbType === 'mysql') {
         [rows] = await db.execute(sql, params)
     } else {
-        const result = await db.query(sql, params)
+        const quotedSql = quotePostgresIdentifiers(sql)
+        const result = await db.query(quotedSql, params)
         rows = result.rows
     }
     return convertToCamelCase(rows)
