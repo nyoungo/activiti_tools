@@ -524,3 +524,12 @@ body {
     font-size: 14px;
     line-height: 1.6;
 }
+
+/* 分页信息 */
+.pagination-info {
+    display: inline-block;
+    padding: 8px 12px;
+    color: #666;
+    font-size: 14px;
+    margin-right: 16px;
+}
