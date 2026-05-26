@@ -678,59 +678,63 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         
         let taskSql = `
             SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
-                   su.username as assigneeName, su.realname as assigneeRealname,
-                   (SELECT JSON_ARRAYAGG(JSON_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname))
-                    FROM ACT_RU_IDENTITYLINK il
-                    LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
-                    WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
+                   su.username as assigneeName, su.realname as assigneeRealname
             FROM ACT_RU_TASK t
             LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
             WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
-            taskSql = `
-                SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
-                       su.username as assigneeName, su.realname as assigneeRealname,
-                       (SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname)), '[]')
-                        FROM ACT_RU_IDENTITYLINK il
-                        LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
-                        WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
-                FROM ACT_RU_TASK t
-                LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
-                WHERE t.PROC_INST_ID_ = $1
-            `
+            taskSql = taskSql.replace(/\?/, '$1')
         }
         
         let rows
         if (dbType === 'mysql') {
             const [result] = await db.execute(taskSql, [instanceId])
             rows = result
-            for (const row of rows) {
-                if (row.candidates) {
-                    try {
-                        row.candidates = JSON.parse(row.candidates)
-                    } catch (e) {
-                        row.candidates = []
-                    }
-                } else {
-                    row.candidates = []
-                }
-            }
         } else {
             const result = await db.query(taskSql, [instanceId])
             rows = result.rows
-            for (const row of rows) {
-                if (row.candidates && typeof row.candidates === 'string') {
-                    try {
-                        row.candidates = JSON.parse(row.candidates)
-                    } catch (e) {
-                        row.candidates = []
-                    }
-                } else if (!Array.isArray(row.candidates)) {
-                    row.candidates = []
+        }
+        
+        for (const row of rows) {
+            row.candidates = []
+        }
+        
+        if (rows.length > 0) {
+            const taskIds = rows.map(r => r.id)
+            const placeholders = dbType === 'mysql' 
+                ? taskIds.map(() => '?').join(',')
+                : taskIds.map((_, i) => `$${i + 1}`).join(',')
+            
+            let candidateSql = `
+                SELECT il.TASK_ID_ as taskId, il.USER_ID_ as userId, su.username, su.realname
+                FROM ACT_RU_IDENTITYLINK il
+                LEFT JOIN sys_user su ON il.USER_ID_ = su.id
+                WHERE il.TASK_ID_ IN (${placeholders}) AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
+            `
+            
+            let candidates
+            if (dbType === 'mysql') {
+                const [result] = await db.execute(candidateSql, taskIds)
+                candidates = result
+            } else {
+                const result = await db.query(candidateSql, taskIds)
+                candidates = result.rows
+            }
+            
+            const candidateMap = {}
+            for (const c of candidates) {
+                if (!candidateMap[c.taskId]) {
+                    candidateMap[c.taskId] = []
                 }
+                candidateMap[c.taskId].push(c)
+            }
+            
+            for (const row of rows) {
+                row.candidates = candidateMap[row.id] || []
             }
         }
+        
         instance.currentTasks = rows
     }
     
@@ -1183,9 +1187,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         sql = `
             INSERT INTO ACT_RU_EXECUTION (
                 ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
-                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), 1, 1, 1)
         `
         await db.execute(sql, [instanceId, instanceId, procDefId])
         
@@ -1198,17 +1201,16 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
                 PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?)
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?)
         `
-        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
     } else {
         // 1. 重新插入 ACT_RU_EXECUTION 记录
         sql = `
             INSERT INTO ACT_RU_EXECUTION (
                 ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
-                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), 1, 1, 1)
         `
         await db.query(sql, [instanceId, instanceId, procDefId])
         
@@ -1223,7 +1225,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
             ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7)
         `
-        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
     }
 }
 
