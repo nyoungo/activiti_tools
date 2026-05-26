@@ -8,26 +8,8 @@
 </head>
 <body>
     <div id="app">
-        <!-- 侧边栏 -->
-        <aside class="sidebar">
-            <h1>Activiti Tools</h1>
-            <nav>
-                <button class="nav-item active" data-page="instances">
-                    <span>📋</span> 流程实例
-                </button>
-                <button class="nav-item" data-page="definitions">
-                    <span>📄</span> 流程定义
-                </button>
-            </nav>
-            <div class="connection-status" id="connectionStatus">
-                <span class="status-dot"></span>
-                <span id="statusText">未连接</span>
-                <button id="disconnect" class="btn btn-small btn-danger" style="display:none; margin-top: 10px;">断开连接</button>
-            </div>
-        </aside>
-
         <!-- 主内容区 -->
-        <main class="main-content">
+        <main class="main-content-full">
             <!-- 数据库连接页面（初始页面） -->
             <section id="page-connection" class="page active">
                 <div class="page-header">
@@ -94,9 +76,16 @@
             <section id="page-instances" class="page">
                 <div class="page-header">
                     <h2>流程实例管理</h2>
-                    <div class="search-box">
-                        <input type="text" id="searchKeyword" placeholder="搜索流程名称、Key或业务Key...">
-                        <button id="searchBtn" class="btn btn-primary">搜索</button>
+                    <div class="header-right">
+                        <div class="connection-status-simple">
+                            <span class="status-dot"></span>
+                            <span id="statusText">未连接</span>
+                            <button id="disconnect" class="btn btn-small btn-danger" style="display:none; margin-left: 10px;">断开连接</button>
+                        </div>
+                        <div class="search-box">
+                            <input type="text" id="searchKeyword" placeholder="搜索流程名称、Key或业务Key...">
+                            <button id="searchBtn" class="btn btn-primary">搜索</button>
+                        </div>
                     </div>
                 </div>
 
@@ -126,29 +115,6 @@
                     <div class="pagination" id="pagination"></div>
                 </div>
             </section>
-
-            <!-- 流程定义页面 -->
-            <section id="page-definitions" class="page">
-                <div class="page-header">
-                    <h2>流程定义管理</h2>
-                </div>
-                <div class="content-box">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Key</th>
-                                <th>名称</th>
-                                <th>版本</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="definitionsTableBody">
-                            <tr><td colspan="5" class="text-center">暂无数据</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
         </main>
     </div>
 
@@ -160,24 +126,6 @@
                 <button class="modal-close" onclick="closeInstanceModal()">&times;</button>
             </div>
             <div class="modal-body" id="instanceModalBody"></div>
-        </div>
-    </div>
-
-    <!-- 流程定义XML模态框 -->
-    <div id="xmlModal" class="modal">
-        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
-            <div class="modal-header">
-                <h3>流程定义 XML</h3>
-                <button class="modal-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="affectedInstancesInfo" style="display: none; margin-bottom: 12px;"></div>
-                <textarea id="xmlContent" readonly style="min-height: 500px;"></textarea>
-                <div id="xmlActions" style="margin-top: 12px; display: none;">
-                    <button class="btn btn-primary" onclick="saveXml()">保存修改</button>
-                    <button class="btn btn-secondary" onclick="resetXml()">重置</button>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -225,37 +173,6 @@
                 <div class="button-group">
                     <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
                     <button class="btn btn-secondary" onclick="refreshTaskInfo()">刷新</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 退回任务节点模态框 -->
-    <div id="returnTaskModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>退回任务节点</h3>
-                <button class="modal-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>当前任务</label>
-                    <input type="text" id="returnCurrentTask" readonly>
-                </div>
-                <div class="form-group">
-                    <label>退回节点</label>
-                    <select id="returnTargetTask" class="form-control">
-                        <option value="">-- 选择退回节点 --</option>
-                    </select>
-                    <small>选择要退回到的历史节点</small>
-                </div>
-                <div class="form-group">
-                    <label>退回原因</label>
-                    <textarea id="returnReason" placeholder="输入退回原因（可选）" style="width: 100%; min-height: 80px;"></textarea>
-                </div>
-                <div class="button-group">
-                    <button class="btn btn-danger" onclick="confirmReturnTask()">确认退回</button>
-                    <button class="btn btn-secondary" onclick="closeReturnTaskModal()">取消</button>
                 </div>
             </div>
         </div>
