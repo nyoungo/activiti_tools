@@ -1168,7 +1168,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         // 7. 恢复变量
         sql = `
-            SELECT NAME_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
+            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = ? 
               AND NAME_ IS NOT NULL
@@ -1177,13 +1177,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varRows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            
-            let varType = 'string'
-            if (v.LONG_ !== null && v.LONG_ !== undefined) {
-                varType = 'long'
-            } else if (v.DOUBLE_ !== null && v.DOUBLE_ !== undefined) {
-                varType = 'double'
-            }
+            const varType = v.VAR_TYPE_ || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1260,7 +1254,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         }
         
         sql = `
-            SELECT NAME_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
+            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
@@ -1269,6 +1263,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varResult.rows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+            const varType = v.VAR_TYPE_ || 'string'
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
                     ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
@@ -1278,7 +1273,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await db.query(sql, [
                 varId, 
                 v.NAME_, 
-                v.TYPE_, 
+                varType, 
                 instanceId, 
                 v.TEXT_, 
                 v.TEXT2_, 
@@ -1382,7 +1377,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         // 6. 恢复变量
         sql = `
-            SELECT NAME_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
+            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = ? 
               AND NAME_ IS NOT NULL
@@ -1391,13 +1386,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varRows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            
-            let varType = 'string'
-            if (v.LONG_ !== null && v.LONG_ !== undefined) {
-                varType = 'long'
-            } else if (v.DOUBLE_ !== null && v.DOUBLE_ !== undefined) {
-                varType = 'double'
-            }
+            const varType = v.VAR_TYPE_ || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1470,7 +1459,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         }
         
         sql = `
-            SELECT NAME_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
+            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
@@ -1479,6 +1468,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varResult.rows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+            const varType = v.VAR_TYPE_ || 'string'
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
                     ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
@@ -1488,7 +1478,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             await db.query(sql, [
                 varId, 
                 v.NAME_, 
-                v.TYPE_, 
+                varType, 
                 instanceId, 
                 v.TEXT_, 
                 v.TEXT2_, 
