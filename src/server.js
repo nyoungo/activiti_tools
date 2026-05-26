@@ -528,10 +528,12 @@ function quotePostgresIdentifiers(sql) {
 
 async function query(db, dbType, sql, params = []) {
     let rows
+    console.log('[DEBUG SQL]', sql.substring(0, 200))
     if (dbType === 'mysql') {
         [rows] = await db.execute(sql, params)
     } else {
         const quotedSql = quotePostgresIdentifiers(sql)
+        console.log('[DEBUG QUOTED]', quotedSql.substring(0, 200))
         const result = await db.query(quotedSql, params)
         rows = result.rows
     }
