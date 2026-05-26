@@ -827,11 +827,20 @@ async function deleteProcessVariable(db, dbType, instanceId, name) {
 }
 
 async function getProcessDefinitions(db, dbType) {
-    const sql = `
-        SELECT ID_ as id, KEY_ as key, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
-        FROM ACT_RE_PROCDEF
-        ORDER BY KEY_, VERSION_ DESC
-    `
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT ID_ as id, KEY_ as \`key\`, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
+            FROM ACT_RE_PROCDEF
+            ORDER BY KEY_, VERSION_ DESC
+        `
+    } else {
+        sql = `
+            SELECT ID_ as id, KEY_ as key, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
+            FROM ACT_RE_PROCDEF
+            ORDER BY KEY_, VERSION_ DESC
+        `
+    }
     return await query(db, dbType, sql)
 }
 
@@ -1023,10 +1032,10 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
         
         sql = `
             UPDATE ACT_RU_EXECUTION 
-            SET ACT_ID_ = ?, IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
+            SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
             WHERE ID_ = ?
         `
-        await db.execute(sql, [taskDefKey, instanceId])
+        await db.execute(sql, [instanceId])
     } else {
         await db.query('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1)', [instanceId])
         await db.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
@@ -1034,10 +1043,10 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
         
         sql = `
             UPDATE ACT_RU_EXECUTION 
-            SET ACT_ID_ = $1, IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
-            WHERE ID_ = $2
+            SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_EVENT_SCOPE_ = 0
+            WHERE ID_ = $1
         `
-        await db.query(sql, [taskDefKey, instanceId])
+        await db.query(sql, [instanceId])
     }
     
     const taskIdNew = `${instanceId}-${taskDefKey}`
@@ -1045,22 +1054,22 @@ async function jumpToHistoryTask(db, dbType, instanceId, taskId) {
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ACT_ID_, ASSIGNEE_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
                 OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
                 CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
         `
-        await db.execute(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+        await db.execute(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId])
     } else {
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ACT_ID_, ASSIGNEE_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
                 OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
                 CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
         `
-        await db.query(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId, taskDefKey])
+        await db.query(sql, [taskIdNew, taskDefKey, taskDefKey, instanceId, procDefId, instanceId])
     }
 }
 

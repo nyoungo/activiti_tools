@@ -343,11 +343,12 @@ async function loadInstances() {
 function renderPagination(total) {
     const totalPages = Math.ceil(total / state.pageSize)
     if (totalPages <= 1) {
-        elements.pagination.innerHTML = ''
+        elements.pagination.innerHTML = `<div class="pagination-info">共 ${total} 条记录，${totalPages} 页</div>`
         return
     }
 
-    let html = `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
+    let html = `<div class="pagination-info">共 ${total} 条记录，第 ${state.currentPage}/${totalPages} 页</div>`
+    html += `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
 
     for (let i = 1; i <= totalPages; i++) {
         if (i === 1 || i === totalPages || (i >= state.currentPage - 2 && i <= state.currentPage + 2)) {
