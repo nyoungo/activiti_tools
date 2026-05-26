@@ -178,6 +178,24 @@
         </div>
     </div>
 
+    <!-- 流程定义XML模态框 -->
+    <div id="xmlModal" class="modal">
+        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
+            <div class="modal-header">
+                <h3>流程定义 XML</h3>
+                <button class="modal-close" onclick="closeXmlModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="affectedInstancesInfo" style="display: none; margin-bottom: 12px;"></div>
+                <textarea id="xmlContent" readonly style="min-height: 500px;"></textarea>
+                <div id="xmlActions" style="margin-top: 12px; display: none;">
+                    <button class="btn btn-primary" onclick="saveXml()">保存修改</button>
+                    <button class="btn btn-secondary" onclick="resetXml()">重置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="js/app.js"></script>
 </body>
 </html>

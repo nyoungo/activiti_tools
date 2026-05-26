@@ -26,7 +26,9 @@ const state = {
     pageSize: 10,
     searchKeyword: '',
     currentInstanceId: null,
-    instanceTab: 'running'
+    instanceTab: 'running',
+    currentDefinitionId: null,
+    originalXml: null
 }
 
 // DOM 元素
@@ -61,7 +63,10 @@ const elements = {
     newAssignee: document.getElementById('newAssignee'),
     candidateUserId: document.getElementById('candidateUserId'),
     candidateType: document.getElementById('candidateType'),
-    identityLinkList: document.getElementById('identityLinkList')
+    identityLinkList: document.getElementById('identityLinkList'),
+    xmlModal: document.getElementById('xmlModal'),
+    xmlContent: document.getElementById('xmlContent'),
+    xmlActions: document.getElementById('xmlActions')
 }
 
 // 初始化
@@ -283,6 +288,8 @@ async function disconnectFromDb() {
 async function loadInstances() {
     if (!state.connected) return
 
+    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center"><span class="loading">加载中...</span></td></tr>'
+
     const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}&status=${state.instanceTab}`)
 
     if (!result || (!result.instances && !result.error)) {
@@ -368,6 +375,10 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
                 <div class="info-item"><label>发起人</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
             </div>
+            <div style="margin-top: 16px;">
+                <button class="btn btn-secondary btn-small" onclick="viewDefinitionXml('${instance.procDefId}')">查看流程图</button>
+                ${!isFinished ? '<button class="btn btn-secondary btn-small" onclick="editDefinitionXml(\'' + instance.procDefId + '\')">修改流程图</button>' : ''}
+            </div>
         </div>
 
         <div class="detail-section">
@@ -376,17 +387,24 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                 <table class="data-table">
                     <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead>
                     <tbody>
-                        ${instance.currentTasks.map(t => `
+                        ${instance.currentTasks.map(t => {
+                            let assigneeDisplay = '-'
+                            if (t.assignee) {
+                                assigneeDisplay = t.assigneeRealname || t.assigneeName || t.assignee
+                            } else if (t.candidates && t.candidates.length > 0) {
+                                assigneeDisplay = t.candidates.map(c => c.realname || c.username || c.userId).join(', ')
+                            }
+                            return `
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
+                                <td>${assigneeDisplay}</td>
                                 <td>${new Date(t.createTime).toLocaleString()}</td>
                                 <td>
                                     <button class="btn btn-small btn-primary" onclick="openAssigneeModal('${t.id}', '${t.name}', '${t.assignee || ''}')">设置审批人</button>
                                 </td>
                             </tr>
-                        `).join('')}
+                        `}).join('')}
                     </tbody>
                 </table>
             ` : '<p class="text-center">暂无当前任务</p>'}
@@ -444,7 +462,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                                 <td>
-                                    ${!isFinished ? '<button class="btn btn-small btn-danger" onclick="returnToTask(\'' + t.id + '\', \'' + (t.name || t.id) + '\')">退回此处</button>' : ''}
+                                    <button class="btn btn-small btn-danger" onclick="returnToTask('${t.id}', '${t.name || t.id}', ${isFinished})">退回此处</button>
                                 </td>
                             </tr>
                         `).join('')}
@@ -503,10 +521,19 @@ async function deleteVariable(name) {
 }
 
 // 直接退回到任务
-async function returnToTask(taskId, taskName) {
-    if (!confirm(`确定要退回到任务「${taskName}」吗？这将重置流程状态。`)) return
+async function returnToTask(taskId, taskName, isFinished) {
+    const actionText = isFinished ? '重新激活并退回到' : '退回到'
+    const confirmMsg = isFinished 
+        ? `⚠️ 已结束流程退回警告：\n\n此操作将重新激活已结束的流程实例！\n\n确定要将流程「${actionText}」任务「${taskName}」吗？`
+        : `确定要将流程${actionText}任务「${taskName}」吗？这将重置流程状态。`
+    
+    if (!confirm(confirmMsg)) return
 
-    const result = await api.post(`/api/instances/${state.currentInstanceId}/jump-to-task`, { taskId: taskId })
+    const apiUrl = isFinished 
+        ? `/api/instances/${state.currentInstanceId}/jump-to-finished-task`
+        : `/api/instances/${state.currentInstanceId}/jump-to-task`
+
+    const result = await api.post(apiUrl, { taskId: taskId })
 
     if (result.success) {
         alert('退回成功')
@@ -536,12 +563,15 @@ async function loadIdentityLinks(taskId) {
     const identitylinks = await api.get(`/api/tasks/${taskId}/identitylinks`)
 
     if (identitylinks && identitylinks.length > 0) {
-        elements.identityLinkList.innerHTML = identitylinks.map(link => `
+        elements.identityLinkList.innerHTML = identitylinks.map(link => {
+            const displayName = link.realname || link.username || link.userId
+            const userInfo = link.username ? `${link.userId} (${displayName})` : link.userId
+            return `
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; border-bottom: 1px solid #eee;">
-                <span>${link.userId} (${link.type === 'candidate' ? '候选人' : '审批人'})</span>
+                <span>${userInfo} - ${link.type === 'candidate' ? '候选人' : '审批人'}</span>
                 <button class="btn btn-small btn-danger" onclick="removeIdentityLink('${link.userId}', '${link.type}')">删除</button>
             </div>
-        `).join('')
+        `}).join('')
     } else {
         elements.identityLinkList.innerHTML = '<p style="color: #999; text-align: center;">暂无候选人/审批人</p>'
     }
@@ -612,6 +642,87 @@ async function refreshTaskInfo() {
     }
 
     await loadIdentityLinks(currentTaskId)
+}
+
+// 查看流程定义XML
+async function viewDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = true
+    elements.xmlActions.style.display = 'none'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+    document.getElementById('affectedInstancesInfo').style.display = 'none'
+    elements.xmlModal.classList.add('show')
+}
+
+// 编辑流程定义XML
+async function editDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = false
+    elements.xmlActions.style.display = 'block'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+
+    const affectedInfo = document.getElementById('affectedInstancesInfo')
+    try {
+        const affected = await api.get(`/api/definitions/${defId}/affected-instances`)
+        if (affected.total > 0) {
+            const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+            const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;"><strong>⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例</strong><br><small>实例时间段：${earliest} ~ ${latest}</small></div>`
+            affectedInfo.style.display = 'block'
+        } else {
+            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #d1ecf1; border: 1px solid #17a2b8; border-radius: 6px; color: #0c5460;"><strong>ℹ️ 暂无关联的历史实例，可以安全修改</strong></div>`
+            affectedInfo.style.display = 'block'
+        }
+    } catch (error) {
+        affectedInfo.style.display = 'none'
+    }
+
+    elements.xmlModal.classList.add('show')
+}
+
+// 保存XML
+async function saveXml() {
+    const xml = elements.xmlContent.value
+    if (!xml.trim()) {
+        alert('XML内容不能为空')
+        return
+    }
+
+    const affected = await api.get(`/api/definitions/${state.currentDefinitionId}/affected-instances`)
+    let confirmMsg = '确定要保存修改吗？'
+
+    if (affected.total > 0) {
+        const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+        const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+        confirmMsg = `⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例\n\n实例时间段：${earliest} ~ ${latest}\n\n确定要继续保存吗？`
+    }
+
+    if (!confirm(confirmMsg)) {
+        return
+    }
+
+    const result = await api.put(`/api/definitions/${state.currentDefinitionId}/xml`, { xml })
+
+    if (result.success) {
+        alert('保存成功')
+        state.originalXml = xml
+    } else {
+        alert('保存失败: ' + result.error)
+    }
+}
+
+// 重置XML
+function resetXml() {
+    elements.xmlContent.value = state.originalXml
+}
+
+// 关闭XML模态框
+function closeXmlModal() {
+    elements.xmlModal.classList.remove('show')
 }
 
 // 启动应用
