@@ -1064,10 +1064,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
-                OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
-                CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?)
         `
         await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
     } else {
@@ -1085,10 +1083,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
-                OWNER_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_,
-                CATEGORY_, SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, NULL, NULL, NULL, 50, NOW(), NULL, NULL, 1, '', NULL)
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7)
         `
         await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
     }
@@ -1175,7 +1171,7 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
         sql = `
             SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
             FROM ACT_RU_IDENTITYLINK
-            WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
+            WHERE TASK_ID_ = ? AND TYPE_ = 'candidate' AND USER_ID_ IS NOT NULL
         `
         const [rows] = await db.execute(sql, [taskId])
         return rows
@@ -1183,7 +1179,7 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
         sql = `
             SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
             FROM ACT_RU_IDENTITYLINK
-            WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
+            WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate' AND USER_ID_ IS NOT NULL
         `
         const result = await db.query(sql, [taskId])
         return result.rows

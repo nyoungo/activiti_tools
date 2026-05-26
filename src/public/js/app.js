@@ -26,7 +26,9 @@ const state = {
     pageSize: 10,
     searchKeyword: '',
     currentInstanceId: null,
-    instanceTab: 'running'
+    instanceTab: 'running',
+    currentDefinitionId: null,
+    originalXml: null
 }
 
 // DOM 元素
@@ -61,7 +63,10 @@ const elements = {
     newAssignee: document.getElementById('newAssignee'),
     candidateUserId: document.getElementById('candidateUserId'),
     candidateType: document.getElementById('candidateType'),
-    identityLinkList: document.getElementById('identityLinkList')
+    identityLinkList: document.getElementById('identityLinkList'),
+    xmlModal: document.getElementById('xmlModal'),
+    xmlContent: document.getElementById('xmlContent'),
+    xmlActions: document.getElementById('xmlActions')
 }
 
 // 初始化
@@ -368,6 +373,10 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
                 <div class="info-item"><label>发起人</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
             </div>
+            <div style="margin-top: 16px;">
+                <button class="btn btn-secondary btn-small" onclick="viewDefinitionXml('${instance.procDefId}')">查看流程图</button>
+                ${!isFinished ? '<button class="btn btn-secondary btn-small" onclick="editDefinitionXml(\'' + instance.procDefId + '\')">修改流程图</button>' : ''}
+            </div>
         </div>
 
         <div class="detail-section">
@@ -612,6 +621,87 @@ async function refreshTaskInfo() {
     }
 
     await loadIdentityLinks(currentTaskId)
+}
+
+// 查看流程定义XML
+async function viewDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = true
+    elements.xmlActions.style.display = 'none'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+    document.getElementById('affectedInstancesInfo').style.display = 'none'
+    elements.xmlModal.classList.add('show')
+}
+
+// 编辑流程定义XML
+async function editDefinitionXml(defId) {
+    const result = await api.get(`/api/definitions/${defId}/xml`)
+    elements.xmlContent.value = result.xml || ''
+    elements.xmlContent.readOnly = false
+    elements.xmlActions.style.display = 'block'
+    state.currentDefinitionId = defId
+    state.originalXml = result.xml
+
+    const affectedInfo = document.getElementById('affectedInstancesInfo')
+    try {
+        const affected = await api.get(`/api/definitions/${defId}/affected-instances`)
+        if (affected.total > 0) {
+            const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+            const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;"><strong>⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例</strong><br><small>实例时间段：${earliest} ~ ${latest}</small></div>`
+            affectedInfo.style.display = 'block'
+        } else {
+            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #d1ecf1; border: 1px solid #17a2b8; border-radius: 6px; color: #0c5460;"><strong>ℹ️ 暂无关联的历史实例，可以安全修改</strong></div>`
+            affectedInfo.style.display = 'block'
+        }
+    } catch (error) {
+        affectedInfo.style.display = 'none'
+    }
+
+    elements.xmlModal.classList.add('show')
+}
+
+// 保存XML
+async function saveXml() {
+    const xml = elements.xmlContent.value
+    if (!xml.trim()) {
+        alert('XML内容不能为空')
+        return
+    }
+
+    const affected = await api.get(`/api/definitions/${state.currentDefinitionId}/affected-instances`)
+    let confirmMsg = '确定要保存修改吗？'
+
+    if (affected.total > 0) {
+        const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
+        const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
+        confirmMsg = `⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例\n\n实例时间段：${earliest} ~ ${latest}\n\n确定要继续保存吗？`
+    }
+
+    if (!confirm(confirmMsg)) {
+        return
+    }
+
+    const result = await api.put(`/api/definitions/${state.currentDefinitionId}/xml`, { xml })
+
+    if (result.success) {
+        alert('保存成功')
+        state.originalXml = xml
+    } else {
+        alert('保存失败: ' + result.error)
+    }
+}
+
+// 重置XML
+function resetXml() {
+    elements.xmlContent.value = state.originalXml
+}
+
+// 关闭XML模态框
+function closeXmlModal() {
+    elements.xmlModal.classList.remove('show')
 }
 
 // 启动应用
