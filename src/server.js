@@ -678,59 +678,63 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         
         let taskSql = `
             SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
-                   su.username as assigneeName, su.realname as assigneeRealname,
-                   (SELECT JSON_ARRAYAGG(JSON_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname))
-                    FROM ACT_RU_IDENTITYLINK il
-                    LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
-                    WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
+                   su.username as assigneeName, su.realname as assigneeRealname
             FROM ACT_RU_TASK t
             LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
             WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
-            taskSql = `
-                SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
-                       su.username as assigneeName, su.realname as assigneeRealname,
-                       (SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname)), '[]')
-                        FROM ACT_RU_IDENTITYLINK il
-                        LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
-                        WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
-                FROM ACT_RU_TASK t
-                LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
-                WHERE t.PROC_INST_ID_ = $1
-            `
+            taskSql = taskSql.replace(/\?/, '$1')
         }
         
         let rows
         if (dbType === 'mysql') {
             const [result] = await db.execute(taskSql, [instanceId])
             rows = result
-            for (const row of rows) {
-                if (row.candidates) {
-                    try {
-                        row.candidates = JSON.parse(row.candidates)
-                    } catch (e) {
-                        row.candidates = []
-                    }
-                } else {
-                    row.candidates = []
-                }
-            }
         } else {
             const result = await db.query(taskSql, [instanceId])
             rows = result.rows
-            for (const row of rows) {
-                if (row.candidates && typeof row.candidates === 'string') {
-                    try {
-                        row.candidates = JSON.parse(row.candidates)
-                    } catch (e) {
-                        row.candidates = []
-                    }
-                } else if (!Array.isArray(row.candidates)) {
-                    row.candidates = []
+        }
+        
+        for (const row of rows) {
+            row.candidates = []
+        }
+        
+        if (rows.length > 0) {
+            const taskIds = rows.map(r => r.id)
+            const placeholders = dbType === 'mysql' 
+                ? taskIds.map(() => '?').join(',')
+                : taskIds.map((_, i) => `$${i + 1}`).join(',')
+            
+            let candidateSql = `
+                SELECT il.TASK_ID_ as taskId, il.USER_ID_ as userId, su.username, su.realname
+                FROM ACT_RU_IDENTITYLINK il
+                LEFT JOIN sys_user su ON il.USER_ID_ = su.id
+                WHERE il.TASK_ID_ IN (${placeholders}) AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
+            `
+            
+            let candidates
+            if (dbType === 'mysql') {
+                const [result] = await db.execute(candidateSql, taskIds)
+                candidates = result
+            } else {
+                const result = await db.query(candidateSql, taskIds)
+                candidates = result.rows
+            }
+            
+            const candidateMap = {}
+            for (const c of candidates) {
+                if (!candidateMap[c.taskId]) {
+                    candidateMap[c.taskId] = []
                 }
+                candidateMap[c.taskId].push(c)
+            }
+            
+            for (const row of rows) {
+                row.candidates = candidateMap[row.id] || []
             }
         }
+        
         instance.currentTasks = rows
     }
     
