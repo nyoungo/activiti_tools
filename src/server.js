@@ -522,11 +522,7 @@ function convertToCamelCase(obj) {
 
 // 给PostgreSQL/瀚高数据库的SQL中的所有标识符加双引号（保持大小写）
 function quotePostgresIdentifiers(sql) {
-    // 替换 FROM/JOIN 后面的表名（大写开头）
-    sql = sql.replace(/\b(FROM|JOIN|INTO|UPDATE)\s+([A-Z][A-Z_0-9]*)/gi, '$1 "$2"')
-    // 替换列名前面的表别名（列名以大写字母开头，包含下划线）
-    sql = sql.replace(/([a-z])\.([A-Z][A-Z0-9_]*_)/gi, '$1."$2"')
-    // 给别名加双引号（驼峰命名）
+    // 只给别名加双引号（驼峰命名）
     sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)/gi, 'AS "$1"')
     return sql
 }
