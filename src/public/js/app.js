@@ -288,6 +288,8 @@ async function disconnectFromDb() {
 async function loadInstances() {
     if (!state.connected) return
 
+    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center"><span class="loading">加载中...</span></td></tr>'
+
     const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}&status=${state.instanceTab}`)
 
     if (!result || (!result.instances && !result.error)) {
@@ -385,17 +387,24 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                 <table class="data-table">
                     <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead>
                     <tbody>
-                        ${instance.currentTasks.map(t => `
+                        ${instance.currentTasks.map(t => {
+                            let assigneeDisplay = '-'
+                            if (t.assignee) {
+                                assigneeDisplay = t.assigneeRealname || t.assigneeName || t.assignee
+                            } else if (t.candidates && t.candidates.length > 0) {
+                                assigneeDisplay = t.candidates.map(c => c.realname || c.username || c.userId).join(', ')
+                            }
+                            return `
                             <tr>
                                 <td><code>${t.id}</code></td>
                                 <td>${t.name}</td>
-                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
+                                <td>${assigneeDisplay}</td>
                                 <td>${new Date(t.createTime).toLocaleString()}</td>
                                 <td>
                                     <button class="btn btn-small btn-primary" onclick="openAssigneeModal('${t.id}', '${t.name}', '${t.assignee || ''}')">设置审批人</button>
                                 </td>
                             </tr>
-                        `).join('')}
+                        `}).join('')}
                     </tbody>
                 </table>
             ` : '<p class="text-center">暂无当前任务</p>'}
@@ -545,12 +554,15 @@ async function loadIdentityLinks(taskId) {
     const identitylinks = await api.get(`/api/tasks/${taskId}/identitylinks`)
 
     if (identitylinks && identitylinks.length > 0) {
-        elements.identityLinkList.innerHTML = identitylinks.map(link => `
+        elements.identityLinkList.innerHTML = identitylinks.map(link => {
+            const displayName = link.realname || link.username || link.userId
+            const userInfo = link.username ? `${link.userId} (${displayName})` : link.userId
+            return `
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; border-bottom: 1px solid #eee;">
-                <span>${link.userId} (${link.type === 'candidate' ? '候选人' : '审批人'})</span>
+                <span>${userInfo} - ${link.type === 'candidate' ? '候选人' : '审批人'}</span>
                 <button class="btn btn-small btn-danger" onclick="removeIdentityLink('${link.userId}', '${link.type}')">删除</button>
             </div>
-        `).join('')
+        `}).join('')
     } else {
         elements.identityLinkList.innerHTML = '<p style="color: #999; text-align: center;">暂无候选人/审批人</p>'
     }

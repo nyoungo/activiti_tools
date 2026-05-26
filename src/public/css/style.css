@@ -324,6 +324,29 @@ body {
     margin-right: 16px;
 }
 
+/* Loading */
+.loading {
+    color: #3498db;
+    font-weight: 500;
+}
+
+.loading::after {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #3498db;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
 /* 模态框 */
 .modal {
     display: none;

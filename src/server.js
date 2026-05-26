@@ -664,21 +664,60 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
         
         let taskSql = `
             SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
-                   su.username as assigneeName, su.realname as assigneeRealname
+                   su.username as assigneeName, su.realname as assigneeRealname,
+                   (SELECT JSON_ARRAYAGG(JSON_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname))
+                    FROM ACT_RU_IDENTITYLINK il
+                    LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
+                    WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
             FROM ACT_RU_TASK t
             LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
             WHERE t.PROC_INST_ID_ = ?
         `
         if (dbType === 'postgres') {
-            taskSql = taskSql.replace(/\?/, '$1')
+            taskSql = `
+                SELECT t.ID_ as id, t.NAME_ as name, t.ASSIGNEE_ as assignee, t.CREATE_TIME_ as createTime,
+                       su.username as assigneeName, su.realname as assigneeRealname,
+                       (SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('userId', il.USER_ID_, 'username', su2.username, 'realname', su2.realname)), '[]')
+                        FROM ACT_RU_IDENTITYLINK il
+                        LEFT JOIN sys_user su2 ON il.USER_ID_ = su2.id
+                        WHERE il.TASK_ID_ = t.ID_ AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL) as candidates
+                FROM ACT_RU_TASK t
+                LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
+                WHERE t.PROC_INST_ID_ = $1
+            `
         }
+        
+        let rows
         if (dbType === 'mysql') {
-            const [rows] = await db.execute(taskSql, [instanceId])
-            instance.currentTasks = rows
+            const [result] = await db.execute(taskSql, [instanceId])
+            rows = result
+            for (const row of rows) {
+                if (row.candidates) {
+                    try {
+                        row.candidates = JSON.parse(row.candidates)
+                    } catch (e) {
+                        row.candidates = []
+                    }
+                } else {
+                    row.candidates = []
+                }
+            }
         } else {
             const result = await db.query(taskSql, [instanceId])
-            instance.currentTasks = result.rows
+            rows = result.rows
+            for (const row of rows) {
+                if (row.candidates && typeof row.candidates === 'string') {
+                    try {
+                        row.candidates = JSON.parse(row.candidates)
+                    } catch (e) {
+                        row.candidates = []
+                    }
+                } else if (!Array.isArray(row.candidates)) {
+                    row.candidates = []
+                }
+            }
         }
+        instance.currentTasks = rows
     }
     
     return instance
@@ -1169,17 +1208,21 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
     let sql
     if (dbType === 'mysql') {
         sql = `
-            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
-            FROM ACT_RU_IDENTITYLINK
-            WHERE TASK_ID_ = ? AND TYPE_ = 'candidate' AND USER_ID_ IS NOT NULL
+            SELECT il.ID_ as id, il.TYPE_ as type, il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
+                   su.username, su.realname
+            FROM ACT_RU_IDENTITYLINK il
+            LEFT JOIN sys_user su ON il.USER_ID_ = su.id
+            WHERE il.TASK_ID_ = ? AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
         `
         const [rows] = await db.execute(sql, [taskId])
         return rows
     } else {
         sql = `
-            SELECT ID_ as id, TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId
-            FROM ACT_RU_IDENTITYLINK
-            WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate' AND USER_ID_ IS NOT NULL
+            SELECT il.ID_ as id, il.TYPE_ as type, il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
+                   su.username, su.realname
+            FROM ACT_RU_IDENTITYLINK il
+            LEFT JOIN sys_user su ON il.USER_ID_ = su.id
+            WHERE il.TASK_ID_ = $1 AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
         `
         const result = await db.query(sql, [taskId])
         return result.rows
