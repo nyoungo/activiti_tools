@@ -26,16 +26,12 @@ const state = {
     pageSize: 10,
     searchKeyword: '',
     currentInstanceId: null,
-    instanceTab: 'running',
-    currentDefinitionId: null,
-    originalXml: null
+    instanceTab: 'running'
 }
 
 // DOM 元素
 const elements = {
-    navItems: document.querySelectorAll('.nav-item'),
     pages: document.querySelectorAll('.page'),
-    connectionStatus: document.getElementById('connectionStatus'),
     statusDot: document.querySelector('.status-dot'),
     statusText: document.getElementById('statusText'),
     savedConnections: document.getElementById('savedConnections'),
@@ -55,13 +51,9 @@ const elements = {
     searchKeyword: document.getElementById('searchKeyword'),
     searchBtn: document.getElementById('searchBtn'),
     instancesTableBody: document.getElementById('instancesTableBody'),
-    definitionsTableBody: document.getElementById('definitionsTableBody'),
     pagination: document.getElementById('pagination'),
     instanceModal: document.getElementById('instanceModal'),
     instanceModalBody: document.getElementById('instanceModalBody'),
-    xmlModal: document.getElementById('xmlModal'),
-    xmlContent: document.getElementById('xmlContent'),
-    xmlActions: document.getElementById('xmlActions'),
     assigneeModal: document.getElementById('assigneeModal'),
     assigneeTaskId: document.getElementById('assigneeTaskId'),
     assigneeTaskName: document.getElementById('assigneeTaskName'),
@@ -69,11 +61,7 @@ const elements = {
     newAssignee: document.getElementById('newAssignee'),
     candidateUserId: document.getElementById('candidateUserId'),
     candidateType: document.getElementById('candidateType'),
-    identityLinkList: document.getElementById('identityLinkList'),
-    returnTaskModal: document.getElementById('returnTaskModal'),
-    returnCurrentTask: document.getElementById('returnCurrentTask'),
-    returnTargetTask: document.getElementById('returnTargetTask'),
-    returnReason: document.getElementById('returnReason')
+    identityLinkList: document.getElementById('identityLinkList')
 }
 
 // 初始化
@@ -85,14 +73,6 @@ async function init() {
 
 // 绑定事件
 function bindEvents() {
-    // 导航
-    elements.navItems.forEach(item => {
-        item.addEventListener('click', () => {
-            const page = item.dataset.page
-            switchPage(page)
-        })
-    })
-
     // 数据库类型切换
     elements.connType.addEventListener('change', () => {
         const type = elements.connType.value
@@ -164,17 +144,12 @@ function bindEvents() {
 
 // 切换页面
 function switchPage(page) {
-    elements.navItems.forEach(item => {
-        item.classList.toggle('active', item.dataset.page === page)
-    })
     elements.pages.forEach(p => {
         p.classList.toggle('active', p.id === `page-${page}`)
     })
 
     if (page === 'instances' && state.connected) {
         loadInstances()
-    } else if (page === 'definitions' && state.connected) {
-        loadDefinitions()
     }
 }
 
@@ -300,7 +275,7 @@ async function disconnectFromDb() {
     state.connected = false
     updateConnectionStatus()
     elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">请连接数据库</td></tr>'
-    elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
+    elements.pagination.innerHTML = ''
     switchPage('connection')
 }
 
@@ -317,6 +292,7 @@ async function loadInstances() {
     }
 
     const instances = result.instances || []
+    const total = result.total || 0
 
     if (instances.length > 0) {
         elements.instancesTableBody.innerHTML = instances.map(inst => `
@@ -332,33 +308,32 @@ async function loadInstances() {
                 </td>
             </tr>
         `).join('')
-        renderPagination(result.total || 0)
+        renderPagination(total)
     } else {
         elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">暂无数据</td></tr>'
-        elements.pagination.innerHTML = ''
+        renderPagination(total)
     }
 }
 
 // 渲染分页
 function renderPagination(total) {
-    const totalPages = Math.ceil(total / state.pageSize)
-    if (totalPages <= 1) {
-        elements.pagination.innerHTML = `<div class="pagination-info">共 ${total} 条记录，${totalPages} 页</div>`
-        return
-    }
-
+    const totalPages = Math.max(1, Math.ceil(total / state.pageSize))
     let html = `<div class="pagination-info">共 ${total} 条记录，第 ${state.currentPage}/${totalPages} 页</div>`
-    html += `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
 
-    for (let i = 1; i <= totalPages; i++) {
-        if (i === 1 || i === totalPages || (i >= state.currentPage - 2 && i <= state.currentPage + 2)) {
-            html += `<button class="${i === state.currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`
-        } else if (i === state.currentPage - 3 || i === state.currentPage + 3) {
-            html += '<span>...</span>'
+    if (totalPages > 1) {
+        html += `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
+
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= state.currentPage - 2 && i <= state.currentPage + 2)) {
+                html += `<button class="${i === state.currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`
+            } else if (i === state.currentPage - 3 || i === state.currentPage + 3) {
+                html += '<span>...</span>'
+            }
         }
-    }
 
-    html += `<button onclick="goToPage(${state.currentPage + 1})" ${state.currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`
+        html += `<button onclick="goToPage(${state.currentPage + 1})" ${state.currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`
+    }
+    
     elements.pagination.innerHTML = html
 }
 
@@ -392,10 +367,6 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                 <div class="info-item"><label>状态</label><span><span class="status-tag ${finishedClass}">${statusText}</span></span></div>
                 <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
                 <div class="info-item"><label>发起人</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
-            </div>
-            <div style="margin-top: 16px;">
-                <button class="btn btn-secondary btn-small" onclick="viewDefinitionXml('${instance.procDefId}')">查看流程图</button>
-                ${!isFinished ? '<button class="btn btn-secondary btn-small" onclick="editDefinitionXml(\'' + instance.procDefId + '\')">修改流程图</button>' : ''}
             </div>
         </div>
 
@@ -473,7 +444,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                                 <td>
-                                    ${!isFinished ? '<button class="btn btn-small btn-danger" onclick="openReturnTaskModal(\'' + t.id + '\', \'' + (t.name || t.id) + '\')">退回此处</button>' : ''}
+                                    ${!isFinished ? '<button class="btn btn-small btn-danger" onclick="returnToTask(\'' + t.id + '\', \'' + (t.name || t.id) + '\')">退回此处</button>' : ''}
                                 </td>
                             </tr>
                         `).join('')}
@@ -510,6 +481,11 @@ async function addVariable() {
     showInstanceDetail(state.currentInstanceId)
 }
 
+// 更新变量类型
+function updateVariableType(name, type) {
+    // 这里只是更新本地UI，实际保存时再提交
+}
+
 // 保存变量
 async function saveVariable(name) {
     const type = document.querySelector(`#variableTableBody tr[data-name="${name}"] select`).value
@@ -526,168 +502,14 @@ async function deleteVariable(name) {
     showInstanceDetail(state.currentInstanceId)
 }
 
-// 查看流程定义XML
-async function viewDefinitionXml(defId) {
-    const result = await api.get(`/api/definitions/${defId}/xml`)
-    elements.xmlContent.value = result.xml || ''
-    elements.xmlContent.readOnly = true
-    elements.xmlActions.style.display = 'none'
-    state.currentDefinitionId = defId
-    state.originalXml = result.xml
-    document.getElementById('affectedInstancesInfo').style.display = 'none'
-    elements.xmlModal.classList.add('show')
-}
+// 直接退回到任务
+async function returnToTask(taskId, taskName) {
+    if (!confirm(`确定要退回到任务「${taskName}」吗？这将重置流程状态。`)) return
 
-// 编辑流程定义XML
-async function editDefinitionXml(defId) {
-    const result = await api.get(`/api/definitions/${defId}/xml`)
-    elements.xmlContent.value = result.xml || ''
-    elements.xmlContent.readOnly = false
-    elements.xmlActions.style.display = 'block'
-    state.currentDefinitionId = defId
-    state.originalXml = result.xml
-    
-    const affectedInfo = document.getElementById('affectedInstancesInfo')
-    try {
-        const affected = await api.get(`/api/definitions/${defId}/affected-instances`)
-        if (affected.total > 0) {
-            const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
-            const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
-            affectedInfo.innerHTML = `
-                <div class="warning-box">
-                    <strong>⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例</strong><br>
-                    <small>实例时间段：${earliest} ~ ${latest}</small>
-                </div>
-            `
-            affectedInfo.style.display = 'block'
-        } else {
-            affectedInfo.innerHTML = `
-                <div class="info-box">
-                    <strong>ℹ️ 暂无关联的历史实例，可以安全修改</strong>
-                </div>
-            `
-            affectedInfo.style.display = 'block'
-        }
-    } catch (error) {
-        affectedInfo.style.display = 'none'
-    }
-    
-    elements.xmlModal.classList.add('show')
-}
-
-// 保存XML
-async function saveXml() {
-    const xml = elements.xmlContent.value
-    if (!xml.trim()) {
-        alert('XML内容不能为空')
-        return
-    }
-
-    const affected = await api.get(`/api/definitions/${state.currentDefinitionId}/affected-instances`)
-    let confirmMsg = '确定要保存修改吗？'
-    
-    if (affected.total > 0) {
-        const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
-        const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
-        confirmMsg = `⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例\n\n实例时间段：${earliest} ~ ${latest}\n\n确定要继续保存吗？`
-    }
-    
-    if (!confirm(confirmMsg)) {
-        return
-    }
-
-    const result = await api.put(`/api/definitions/${state.currentDefinitionId}/xml`, { xml })
-
-    if (result.success) {
-        alert('保存成功')
-        state.originalXml = xml
-    } else {
-        alert('保存失败: ' + result.error)
-    }
-}
-
-// 重置XML
-function resetXml() {
-    elements.xmlContent.value = state.originalXml
-}
-
-// 加载流程定义
-async function loadDefinitions() {
-    if (!state.connected) {
-        elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">请先连接数据库</td></tr>'
-        return
-    }
-
-    try {
-        const definitions = await api.get('/api/definitions')
-
-        if (!definitions || (Array.isArray(definitions) && definitions.length === 0)) {
-            elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">暂无数据</td></tr>'
-            return
-        }
-
-        if (Array.isArray(definitions) && definitions.length > 0) {
-            elements.definitionsTableBody.innerHTML = definitions.map(def => `
-                <tr>
-                    <td><code>${def.id}</code></td>
-                    <td>${def.key}</td>
-                    <td>${def.name || '-'}</td>
-                    <td>${def.version}</td>
-                    <td>
-                        <button class="btn btn-small btn-primary" onclick="viewDefinitionXml('${def.id}')">查看</button>
-                        <button class="btn btn-small btn-secondary" onclick="editDefinitionXml('${def.id}')">修改</button>
-                    </td>
-                </tr>
-            `).join('')
-        }
-    } catch (error) {
-        console.error('加载流程定义失败:', error)
-        elements.definitionsTableBody.innerHTML = '<tr><td colspan="5" class="text-center">加载失败</td></tr>'
-    }
-}
-
-// 退回任务模态框
-let currentReturnTaskId = null
-
-async function openReturnTaskModal(taskId, taskName) {
-    currentReturnTaskId = taskId
-    elements.returnCurrentTask.value = `${taskId} - ${taskName}`
-
-    // 加载历史任务列表
-    const historyTasks = await api.get(`/api/instances/${state.currentInstanceId}/history-tasks`)
-
-    elements.returnTargetTask.innerHTML = '<option value="">-- 选择退回节点 --</option>'
-    historyTasks.forEach(t => {
-        const option = document.createElement('option')
-        option.value = t.id
-        option.textContent = `${t.id} - ${t.name || '未命名'}`
-        elements.returnTargetTask.appendChild(option)
-    })
-
-    elements.returnReason.value = ''
-    elements.returnTaskModal.classList.add('show')
-}
-
-function closeReturnTaskModal() {
-    elements.returnTaskModal.classList.remove('show')
-    currentReturnTaskId = null
-}
-
-// 确认退回任务
-async function confirmReturnTask() {
-    const targetTaskId = elements.returnTargetTask.value
-    if (!targetTaskId) {
-        alert('请选择要退回到的节点')
-        return
-    }
-
-    if (!confirm('确定要退回到此节点吗？这将重置流程状态。')) return
-
-    const result = await api.post(`/api/instances/${state.currentInstanceId}/jump-to-task`, { taskId: targetTaskId })
+    const result = await api.post(`/api/instances/${state.currentInstanceId}/jump-to-task`, { taskId: taskId })
 
     if (result.success) {
         alert('退回成功')
-        closeReturnTaskModal()
         closeInstanceModal()
         loadInstances()
     } else {
