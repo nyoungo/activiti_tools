@@ -162,7 +162,7 @@ app.post('/api/connect', async (req, res) => {
 
 app.post('/api/disconnect', (req, res) => {
     if (activitiDb) {
-        if (dbConfig?.dbType === 'postgres') {
+        if (dbConfig?.dbType === 'postgres' || dbConfig?.dbType === 'hgdatabase') {
             activitiDb.end()
         } else {
             activitiDb.end()
@@ -495,16 +495,49 @@ async function createConnection(config) {
     }
 }
 
+// 将字段名转换为驼峰命名法
+function toCamelCase(str) {
+    if (!str) return str
+    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
+}
+
+// 转换对象的所有字段名为驼峰命名法
+function convertToCamelCase(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(item => convertToCamelCase(item))
+    } else if (obj && typeof obj === 'object') {
+        const result = {}
+        for (const key in obj) {
+            const camelKey = toCamelCase(key)
+            let value = obj[key]
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                value = convertToCamelCase(value)
+            }
+            result[camelKey] = value
+        }
+        return result
+    }
+    return obj
+}
+
+// 内部查询函数，返回驼峰命名法的字段名
+async function queryWithCamelCase(db, dbType, sql, params = []) {
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(sql, params)
+        return rows
+    } else {
+        const result = await db.query(sql, params)
+        return convertToCamelCase(result.rows)
+    }
+}
+
 async function query(db, dbType, sql, params = []) {
     if (dbType === 'mysql') {
         const [rows] = await db.execute(sql, params)
         return rows
-    } else if (dbType === 'postgres') {
+    } else if (dbType === 'postgres' || dbType === 'hgdatabase') {
         const result = await db.query(sql, params)
-        return result.rows
-    } else if (dbType === 'hgdatabase') {
-        const result = await db.query(sql, params)
-        return result.rows
+        return convertToCamelCase(result.rows)
     }
 }
 
@@ -1089,24 +1122,23 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     // 1. 查询历史任务数据
     sql = `
         SELECT 
-            t.ID_ as task_id,
-            t.NAME_ as task_name,
-            t.TASK_DEF_KEY_,
-            t.PROC_DEF_ID_,
-            t.START_TIME_ as task_create_time,
-            t.ASSIGNEE_ as task_assignee,
-            t.PRIORITY_,
-            p.ID_ as proc_inst_id,
-            p.BUSINESS_KEY_,
-            p.START_TIME_,
-            p.START_USER_ID_,
-            p.PROC_DEF_ID_ as proc_def_id
+            t.ID_ as taskId,
+            t.NAME_ as taskName,
+            t.TASK_DEF_KEY_ as taskDefKey,
+            t.PROC_DEF_ID_ as procDefId,
+            t.START_TIME_ as taskCreateTime,
+            t.ASSIGNEE_ as taskAssignee,
+            t.PRIORITY_ as priority,
+            p.ID_ as procInstId,
+            p.BUSINESS_KEY_ as businessKey,
+            p.START_TIME_ as startTime,
+            p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
     params = [targetTaskId, instanceId]
-    if (dbType === 'postgres') {
+    if (dbType === 'postgres' || dbType === 'hgdatabase') {
         sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
     }
     
@@ -1115,8 +1147,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, params)
         taskRows = result
     } else {
-        const result = await db.query(sql, params)
-        taskRows = result.rows
+        taskRows = await queryWithCamelCase(db, dbType, sql, params)
     }
     
     if (taskRows.length === 0) {
@@ -1126,28 +1157,24 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     const taskData = taskRows[0]
     
     // 2. 查询目标任务之后的所有历史记录，准备删除
-    sql = `SELECT ID_, START_TIME_ FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/, '$1')
-    }
+    sql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
     
     let allTaskRows
     if (dbType === 'mysql') {
         const [result] = await db.execute(sql, [instanceId])
         allTaskRows = result
     } else {
-        const result = await db.query(sql, [instanceId])
-        allTaskRows = result.rows
+        allTaskRows = await queryWithCamelCase(db, dbType, sql, [instanceId])
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
     let targetTaskIndex = -1
     const taskIdsToDelete = []
     for (let i = 0; i < allTaskRows.length; i++) {
-        if (allTaskRows[i].ID_ === targetTaskId) {
+        if (allTaskRows[i].id === targetTaskId) {
             targetTaskIndex = i
         } else if (targetTaskIndex !== -1) {
-            taskIdsToDelete.push(allTaskRows[i].ID_)
+            taskIdsToDelete.push(allTaskRows[i].id)
         }
     }
     
@@ -1165,11 +1192,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 START_TIME_ = ?, START_USER_ID_ = ?
             WHERE ID_ = ?
         `
-        await db.execute(sql, [taskData.START_TIME_, taskData.START_USER_ID_, instanceId])
+        await db.execute(sql, [taskData.startTime, taskData.startUserId, instanceId])
         
         // 5. 查询身份关联（候选人）
         sql = `
-            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
         `
@@ -1178,7 +1205,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
         if (identityLinks.length === 0) {
-            taskAssignee = taskData.task_assignee
+            taskAssignee = taskData.taskAssignee
         }
         
         // 7. 创建任务，使用原来的任务ID
@@ -1191,14 +1218,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.execute(sql, [
             targetTaskId, 
-            taskData.task_name, 
-            taskData.PRIORITY_ || 50, 
-            taskData.task_create_time, 
+            taskData.taskName, 
+            taskData.priority || 50, 
+            taskData.taskCreateTime, 
             taskAssignee,
             instanceId, 
             instanceId, 
-            taskData.PROC_DEF_ID_, 
-            taskData.TASK_DEF_KEY_
+            taskData.procDefId, 
+            taskData.taskDefKey
         ])
         
         // 8. 恢复身份关联（仅当有候选人时）
@@ -1209,12 +1236,12 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                     ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                 ) VALUES (?, 1, ?, ?, ?, ?, ?)
             `
-            await db.execute(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, targetTaskId, instanceId])
+            await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
         }
         
         // 9. 恢复变量
         sql = `
-            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = ? 
               AND NAME_ IS NOT NULL
@@ -1223,7 +1250,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varRows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.VAR_TYPE_ || 'string'
+            const varType = v.varType || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1233,14 +1260,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.execute(sql, [
                 varId, 
-                v.NAME_, 
+                v.name, 
                 varType, 
                 instanceId, 
-                v.TEXT_, 
-                v.TEXT2_, 
-                v.DOUBLE_, 
-                v.LONG_, 
-                v.BYTEARRAY_ID_
+                v.text, 
+                v.text2, 
+                v.double, 
+                v.long, 
+                v.bytearrayId
             ])
         }
         
@@ -1283,20 +1310,20 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 START_TIME_ = $1, START_USER_ID_ = $2
             WHERE ID_ = $3
         `
-        await db.query(sql, [taskData.START_TIME_, taskData.START_USER_ID_, instanceId])
+        await db.query(sql, [taskData.startTime, taskData.startUserId, instanceId])
         
         // 查询身份关联（候选人）
         sql = `
-            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
         `
-        const identityResult = await db.query(sql, [targetTaskId])
+        const identityResult = await queryWithCamelCase(db, dbType, sql, [targetTaskId])
         
         // 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
-        if (identityResult.rows.length === 0) {
-            taskAssignee = taskData.task_assignee
+        if (identityResult.length === 0) {
+            taskAssignee = taskData.taskAssignee
         }
         
         // 创建任务，使用原来的任务ID
@@ -1309,38 +1336,38 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.query(sql, [
             targetTaskId, 
-            taskData.task_name, 
-            taskData.PRIORITY_ || 50, 
-            taskData.task_create_time, 
+            taskData.taskName, 
+            taskData.priority || 50, 
+            taskData.taskCreateTime, 
             taskAssignee,
             instanceId, 
             instanceId, 
-            taskData.PROC_DEF_ID_, 
-            taskData.TASK_DEF_KEY_
+            taskData.procDefId, 
+            taskData.taskDefKey
         ])
         
         // 恢复身份关联（仅当有候选人时）
-        for (const link of identityResult.rows) {
+        for (const link of identityResult) {
             const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             sql = `
                 INSERT INTO ACT_RU_IDENTITYLINK (
                     ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6)
             `
-            await db.query(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, targetTaskId, instanceId])
+            await db.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
         }
         
         sql = `
-            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
         `
-        const varResult = await db.query(sql, [instanceId])
+        const varResult = await queryWithCamelCase(db, dbType, sql, [instanceId])
         
-        for (const v of varResult.rows) {
+        for (const v of varResult) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.VAR_TYPE_ || 'string'
+            const varType = v.varType || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1350,14 +1377,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.query(sql, [
                 varId, 
-                v.NAME_, 
+                v.name, 
                 varType, 
                 instanceId, 
-                v.TEXT_, 
-                v.TEXT2_, 
-                v.DOUBLE_, 
-                v.LONG_, 
-                v.BYTEARRAY_ID_
+                v.text, 
+                v.text2, 
+                v.double, 
+                v.long, 
+                v.bytearrayId
             ])
         }
         
@@ -1392,24 +1419,23 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     // 1. 查询历史任务数据
     sql = `
         SELECT 
-            t.ID_ as task_id,
-            t.NAME_ as task_name,
-            t.TASK_DEF_KEY_,
-            t.PROC_DEF_ID_,
-            t.START_TIME_ as task_create_time,
-            t.ASSIGNEE_ as task_assignee,
-            t.PRIORITY_,
-            p.ID_ as proc_inst_id,
-            p.BUSINESS_KEY_,
-            p.START_TIME_,
-            p.START_USER_ID_,
-            p.PROC_DEF_ID_ as proc_def_id
+            t.ID_ as taskId,
+            t.NAME_ as taskName,
+            t.TASK_DEF_KEY_ as taskDefKey,
+            t.PROC_DEF_ID_ as procDefId,
+            t.START_TIME_ as taskCreateTime,
+            t.ASSIGNEE_ as taskAssignee,
+            t.PRIORITY_ as priority,
+            p.ID_ as procInstId,
+            p.BUSINESS_KEY_ as businessKey,
+            p.START_TIME_ as startTime,
+            p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
     params = [targetTaskId, instanceId]
-    if (dbType === 'postgres') {
+    if (dbType === 'postgres' || dbType === 'hgdatabase') {
         sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
     }
     
@@ -1418,8 +1444,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [result] = await db.execute(sql, params)
         taskRows = result
     } else {
-        const result = await db.query(sql, params)
-        taskRows = result.rows
+        taskRows = await queryWithCamelCase(db, dbType, sql, params)
     }
     
     if (taskRows.length === 0) {
@@ -1429,28 +1454,24 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     const taskData = taskRows[0]
     
     // 2. 查询目标任务之后的所有历史记录，准备删除
-    sql = `SELECT ID_, START_TIME_ FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/, '$1')
-    }
+    sql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
     
     let allTaskRows
     if (dbType === 'mysql') {
         const [result] = await db.execute(sql, [instanceId])
         allTaskRows = result
     } else {
-        const result = await db.query(sql, [instanceId])
-        allTaskRows = result.rows
+        allTaskRows = await queryWithCamelCase(db, dbType, sql, [instanceId])
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
     let targetTaskIndex = -1
     const taskIdsToDelete = []
     for (let i = 0; i < allTaskRows.length; i++) {
-        if (allTaskRows[i].ID_ === targetTaskId) {
+        if (allTaskRows[i].id === targetTaskId) {
             targetTaskIndex = i
         } else if (targetTaskIndex !== -1) {
-            taskIdsToDelete.push(allTaskRows[i].ID_)
+            taskIdsToDelete.push(allTaskRows[i].id)
         }
     }
     
@@ -1463,11 +1484,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 START_TIME_, START_USER_ID_
             ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?)
         `
-        await db.execute(sql, [instanceId, instanceId, taskData.BUSINESS_KEY_, taskData.PROC_DEF_ID_, taskData.START_TIME_, taskData.START_USER_ID_])
+        await db.execute(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
         
         // 4. 查询身份关联（候选人）
         sql = `
-            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
         `
@@ -1476,7 +1497,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         // 5. 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
         if (identityLinks.length === 0) {
-            taskAssignee = taskData.task_assignee
+            taskAssignee = taskData.taskAssignee
         }
         
         // 6. 创建任务，使用原来的任务ID
@@ -1489,14 +1510,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.execute(sql, [
             targetTaskId, 
-            taskData.task_name, 
-            taskData.PRIORITY_ || 50, 
-            taskData.task_create_time, 
+            taskData.taskName, 
+            taskData.priority || 50, 
+            taskData.taskCreateTime, 
             taskAssignee,
             instanceId, 
             instanceId, 
-            taskData.PROC_DEF_ID_, 
-            taskData.TASK_DEF_KEY_
+            taskData.procDefId, 
+            taskData.taskDefKey
         ])
         
         // 7. 恢复身份关联（仅当有候选人时）
@@ -1507,12 +1528,12 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                     ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                 ) VALUES (?, 1, ?, ?, ?, ?, ?)
             `
-            await db.execute(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, targetTaskId, instanceId])
+            await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
         }
         
         // 8. 恢复变量
         sql = `
-            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = ? 
               AND NAME_ IS NOT NULL
@@ -1521,7 +1542,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         
         for (const v of varRows) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.VAR_TYPE_ || 'string'
+            const varType = v.varType || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1531,14 +1552,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.execute(sql, [
                 varId, 
-                v.NAME_, 
+                v.name, 
                 varType, 
                 instanceId, 
-                v.TEXT_, 
-                v.TEXT2_, 
-                v.DOUBLE_, 
-                v.LONG_, 
-                v.BYTEARRAY_ID_
+                v.text, 
+                v.text2, 
+                v.double, 
+                v.long, 
+                v.bytearrayId
             ])
         }
         
@@ -1577,20 +1598,20 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 START_TIME_, START_USER_ID_
             ) VALUES ($1, 1, $2, $3, $4, 1, 1, $5, $6)
         `
-        await db.query(sql, [instanceId, instanceId, taskData.BUSINESS_KEY_, taskData.PROC_DEF_ID_, taskData.START_TIME_, taskData.START_USER_ID_])
+        await db.query(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
         
         // 查询身份关联（候选人）
         sql = `
-            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
             FROM ACT_HI_IDENTITYLINK
             WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
         `
-        const identityResult = await db.query(sql, [targetTaskId])
+        const identityResult = await queryWithCamelCase(db, dbType, sql, [targetTaskId])
         
         // 确定任务审批人：如果没有候选人，使用历史任务的审批人
         let taskAssignee = null
-        if (identityResult.rows.length === 0) {
-            taskAssignee = taskData.task_assignee
+        if (identityResult.length === 0) {
+            taskAssignee = taskData.taskAssignee
         }
         
         // 创建任务，使用原来的任务ID
@@ -1603,38 +1624,38 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.query(sql, [
             targetTaskId, 
-            taskData.task_name, 
-            taskData.PRIORITY_ || 50, 
-            taskData.task_create_time, 
+            taskData.taskName, 
+            taskData.priority || 50, 
+            taskData.taskCreateTime, 
             taskAssignee,
             instanceId, 
             instanceId, 
-            taskData.PROC_DEF_ID_, 
-            taskData.TASK_DEF_KEY_
+            taskData.procDefId, 
+            taskData.taskDefKey
         ])
         
         // 恢复身份关联（仅当有候选人时）
-        for (const link of identityResult.rows) {
+        for (const link of identityResult) {
             const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             sql = `
                 INSERT INTO ACT_RU_IDENTITYLINK (
                     ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6)
             `
-            await db.query(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, targetTaskId, instanceId])
+            await db.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
         }
         
         sql = `
-            SELECT NAME_, VAR_TYPE_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_HI_VARINST 
             WHERE PROC_INST_ID_ = $1 
               AND NAME_ IS NOT NULL
         `
-        const varResult = await db.query(sql, [instanceId])
+        const varResult = await queryWithCamelCase(db, dbType, sql, [instanceId])
         
-        for (const v of varResult.rows) {
+        for (const v of varResult) {
             const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.VAR_TYPE_ || 'string'
+            const varType = v.varType || 'string'
             
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
@@ -1644,14 +1665,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.query(sql, [
                 varId, 
-                v.NAME_, 
+                v.name, 
                 varType, 
                 instanceId, 
-                v.TEXT_, 
-                v.TEXT2_, 
-                v.DOUBLE_, 
-                v.LONG_, 
-                v.BYTEARRAY_ID_
+                v.text, 
+                v.text2, 
+                v.double, 
+                v.long, 
+                v.bytearrayId
             ])
         }
         
@@ -1887,7 +1908,7 @@ async function start() {
 process.on('SIGINT', () => {
     console.log('\n正在关闭服务器...')
     if (activitiDb) {
-        if (dbConfig?.dbType === 'postgres') {
+        if (dbConfig?.dbType === 'postgres' || dbConfig?.dbType === 'hgdatabase') {
             activitiDb.end()
         } else if (activitiDb.end) {
             activitiDb.end()
