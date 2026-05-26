@@ -43,6 +43,7 @@ const elements = {
     connHost: document.getElementById('connHost'),
     connPort: document.getElementById('connPort'),
     connDatabase: document.getElementById('connDatabase'),
+    connSchema: document.getElementById('connSchema'),
     connUsername: document.getElementById('connUsername'),
     connPassword: document.getElementById('connPassword'),
     testConnection: document.getElementById('testConnection'),
@@ -200,6 +201,7 @@ function loadConnectionById(id) {
         elements.connHost.value = config.host
         elements.connPort.value = config.port
         elements.connDatabase.value = config.database
+        elements.connSchema.value = config.schema || ''
         elements.connUsername.value = config.username
         elements.connPassword.value = ''
     }
@@ -213,6 +215,7 @@ function getConnectionConfig() {
         host: elements.connHost.value,
         port: parseInt(elements.connPort.value) || 3306,
         database: elements.connDatabase.value,
+        schema: elements.connSchema.value,
         username: elements.connUsername.value,
         password: elements.connPassword.value
     }

@@ -80,9 +80,16 @@ async function initLocalDb() {
             port INTEGER NOT NULL,
             database TEXT NOT NULL,
             username TEXT NOT NULL,
-            password TEXT
+            password TEXT,
+            schema TEXT
         )
     `)
+    // 为现有表添加schema字段（如果不存在）
+    try {
+        localDb.run(`ALTER TABLE connections ADD COLUMN schema TEXT`)
+    } catch (e) {
+        // 字段可能已经存在，忽略错误
+    }
     saveLocalDb()
 }
 
@@ -117,9 +124,9 @@ app.post('/api/test-connection', async (req, res) => {
 app.post('/api/save-connection', (req, res) => {
     const config = req.body
     localDb.run(`
-        INSERT INTO connections (name, db_type, host, port, database, username, password)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [config.name, config.dbType, config.host, config.port, config.database, config.username, config.password])
+        INSERT INTO connections (name, db_type, host, port, database, username, password, schema)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [config.name, config.dbType, config.host, config.port, config.database, config.username, config.password, config.schema])
     saveLocalDb()
     
     const result = localDb.exec('SELECT last_insert_rowid() as id')
@@ -128,9 +135,9 @@ app.post('/api/save-connection', (req, res) => {
 })
 
 app.get('/api/connections', (req, res) => {
-    const result = localDb.exec('SELECT id, name, db_type, host, port, database, username FROM connections')
+    const result = localDb.exec('SELECT id, name, db_type, host, port, database, username, schema FROM connections')
     const connections = result.length > 0 ? result[0].values.map(row => ({
-        id: row[0], name: row[1], db_type: row[2], host: row[3], port: row[4], database: row[5], username: row[6]
+        id: row[0], name: row[1], db_type: row[2], host: row[3], port: row[4], database: row[5], username: row[6], schema: row[7]
     })) : []
     res.json(connections)
 })
@@ -442,23 +449,18 @@ async function testConnection(config) {
                 database: config.database
             })
             await conn.ping()
-        } else if (config.dbType === 'postgres') {
-            conn = new Pool({
+        } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+            const poolConfig = {
                 host: config.host,
                 port: config.port,
                 user: config.username,
                 password: config.password,
                 database: config.database
-            })
-            await conn.query('SELECT 1')
-        } else if (config.dbType === 'hgdatabase') {
-            conn = new Pool({
-                host: config.host,
-                port: config.port,
-                user: config.username,
-                password: config.password,
-                database: config.database
-            })
+            }
+            if (config.schema) {
+                poolConfig.options = `-c search_path=${config.schema}`
+            }
+            conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
         }
     } finally {
@@ -478,22 +480,18 @@ async function createConnection(config) {
             password: config.password,
             database: config.database
         })
-    } else if (config.dbType === 'postgres') {
-        return new Pool({
+    } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+        const poolConfig = {
             host: config.host,
             port: config.port,
             user: config.username,
             password: config.password,
             database: config.database
-        })
-    } else if (config.dbType === 'hgdatabase') {
-        return new Pool({
-            host: config.host,
-            port: config.port,
-            user: config.username,
-            password: config.password,
-            database: config.database
-        })
+        }
+        if (config.schema) {
+            poolConfig.options = `-c search_path=${config.schema}`
+        }
+        return new Pool(poolConfig)
     }
 }
 
