@@ -1202,9 +1202,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
                 PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?)
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?)
         `
-        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
     } else {
         // 1. 重新插入 ACT_RU_EXECUTION 记录
         sql = `
@@ -1227,7 +1227,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
             ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7)
         `
-        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
     }
 }
 
