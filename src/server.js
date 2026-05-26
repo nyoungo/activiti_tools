@@ -458,7 +458,7 @@ async function testConnection(config) {
                 database: config.database
             }
             if (config.schema) {
-                poolConfig.searchPath = config.schema
+                poolConfig.options = `-c search_path=${config.schema}`
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
@@ -489,7 +489,7 @@ async function createConnection(config) {
             database: config.database
         }
         if (config.schema) {
-            poolConfig.searchPath = config.schema
+            poolConfig.options = `-c search_path=${config.schema}`
         }
         return new Pool(poolConfig)
     }
