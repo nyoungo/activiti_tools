@@ -1233,9 +1233,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
 async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     let sql, params
     
-    // 1. 获取流程实例的历史信息（业务Key、发起人等）
+    // 1. 查询历史数据
     sql = `
-        SELECT p.BUSINESS_KEY_, p.START_USER_ID_, t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_
+        SELECT 
+            p.BUSINESS_KEY_,
+            t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_
         FROM ACT_HI_TASKINST t
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
@@ -1259,45 +1261,53 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     }
     
     const businessKey = rows[0].BUSINESS_KEY_
-    const startUserId = rows[0].START_USER_ID_
     const taskDefKey = rows[0].TASK_DEF_KEY_
     const procDefId = rows[0].PROC_DEF_ID_
     const taskName = rows[0].NAME_ || taskDefKey
-    const assignee = rows[0].ASSIGNEE_
+    const tenantId = ''
     
     // 2. 生成新任务ID
     const taskIdNew = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     
     if (dbType === 'mysql') {
-        // 先清理：删除目标任务之外的所有历史数据和相关记录
-        await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? AND ID_ != ?', [instanceId, targetTaskId])
-        
-        // 3. 清除 END_TIME_，重新激活流程实例，并恢复业务Key和发起人信息
+        // 3. 恢复执行实例
         sql = `
-            UPDATE ACT_HI_PROCINST 
-            SET END_TIME_ = NULL, 
-                BUSINESS_KEY_ = ?, 
-                START_USER_ID_ = ?
-            WHERE ID_ = ?
+            INSERT INTO ACT_RU_EXECUTION (
+                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_
+            ) VALUES (?, 1, ?, ?, ?, 1, 1)
         `
-        await db.execute(sql, [businessKey, startUserId, instanceId])
+        await db.execute(sql, [instanceId, instanceId, businessKey, procDefId])
         
-        // 4. 插入新任务 - 包含所有必要字段，CREATE_TIME_ 使用 NOW()
+        // 4. 恢复任务实例
         sql = `
             INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
-                PRIORITY_, CREATE_TIME_, SUSPENSION_STATE_, TENANT_ID_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?, ?, 50, NOW(), 1, '')
+                ID_, REV_, NAME_, PRIORITY_, 
+                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+            ) VALUES (?, 1, ?, 50, NOW(), NULL, ?, ?, ?, ?, 1)
         `
-        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
+        await db.execute(sql, [taskIdNew, taskName, instanceId, instanceId, procDefId, taskDefKey])
         
-        // 5. 从 ACT_HI_VARINST 获取历史流程变量并写入 ACT_RU_VARIABLE
+        // 5. 恢复身份关联
+        sql = `
+            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            FROM ACT_HI_IDENTITYLINK
+            WHERE TASK_ID_ = ? OR PROC_INST_ID_ = ?
+        `
+        const [identityLinks] = await db.execute(sql, [targetTaskId, instanceId])
+        
+        for (const link of identityLinks) {
+            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+            sql = `
+                INSERT INTO ACT_RU_IDENTITYLINK (
+                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?)
+            `
+            await db.execute(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, taskIdNew, instanceId])
+        }
+        
+        // 6. 恢复变量
         sql = `
             SELECT NAME_, TEXT_, TEXT2_, TYPE_, DOUBLE_, LONG_, BYTES_
             FROM ACT_HI_VARINST 
@@ -1308,13 +1318,13 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         const [varRows] = await db.execute(sql, [instanceId])
         
         for (const v of varRows) {
+            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, 
+                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                     TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
                 ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
             `
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             await db.execute(sql, [
                 varId, 
                 v.NAME_, 
@@ -1327,33 +1337,57 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 v.BYTES_
             ])
         }
-    } else {
-        // 先清理：删除目标任务之外的所有历史数据和相关记录
-        await db.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = $1 AND ID_ != $2', [instanceId, targetTaskId])
         
+        // 7. 删除活动历史
+        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
+        await db.execute(sql, [instanceId])
+        
+        // 8. 更新历史任务
+        sql = `
+            UPDATE ACT_HI_TASKINST 
+            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+            WHERE ID_ = ?
+        `
+        await db.execute(sql, [targetTaskId])
+        
+        // 9. 更新历史流程实例
+        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+        await db.execute(sql, [instanceId])
+    } else {
         // 瀚高/PostgreSQL 版本
         sql = `
-            UPDATE ACT_HI_PROCINST 
-            SET END_TIME_ = NULL, 
-                BUSINESS_KEY_ = $1, 
-                START_USER_ID_ = $2
-            WHERE ID_ = $3
+            INSERT INTO ACT_RU_EXECUTION (
+                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_
+            ) VALUES ($1, 1, $2, $3, $4, 1, 1)
         `
-        await db.query(sql, [businessKey, startUserId, instanceId])
+        await db.query(sql, [instanceId, instanceId, businessKey, procDefId])
         
         sql = `
             INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
-                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_,
-                PRIORITY_, CREATE_TIME_, SUSPENSION_STATE_, TENANT_ID_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7, 50, NOW(), 1, '')
+                ID_, REV_, NAME_, PRIORITY_, 
+                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+            ) VALUES ($1, 1, $2, 50, NOW(), NULL, $3, $4, $5, $6, 1)
         `
-        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
+        await db.query(sql, [taskIdNew, taskName, instanceId, instanceId, procDefId, taskDefKey])
+        
+        sql = `
+            SELECT TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+            FROM ACT_HI_IDENTITYLINK
+            WHERE TASK_ID_ = $1 OR PROC_INST_ID_ = $2
+        `
+        const identityResult = await db.query(sql, [targetTaskId, instanceId])
+        
+        for (const link of identityResult.rows) {
+            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+            sql = `
+                INSERT INTO ACT_RU_IDENTITYLINK (
+                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6)
+            `
+            await db.query(sql, [linkId, link.TYPE_, link.USER_ID_, link.GROUP_ID_, taskIdNew, instanceId])
+        }
         
         sql = `
             SELECT NAME_, TEXT_, TEXT2_, TYPE_, DOUBLE_, LONG_, BYTES_
@@ -1365,13 +1399,13 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         const varResult = await db.query(sql, [instanceId])
         
         for (const v of varResult.rows) {
+            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             sql = `
                 INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, 
+                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                     TEXT_, TEXT2_, DOUBLE_, LONG_, BYTES_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
             `
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
             await db.query(sql, [
                 varId, 
                 v.NAME_, 
@@ -1384,6 +1418,19 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 v.BYTES_
             ])
         }
+        
+        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
+        await db.query(sql, [instanceId])
+        
+        sql = `
+            UPDATE ACT_HI_TASKINST 
+            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+            WHERE ID_ = $1
+        `
+        await db.query(sql, [targetTaskId])
+        
+        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+        await db.query(sql, [instanceId])
     }
 }
 
