@@ -520,12 +520,14 @@ function convertToCamelCase(obj) {
     return obj
 }
 
-// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名和列名加上双引号
+// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名、列名和别名加上双引号
 function quotePostgresIdentifiers(sql) {
     // 给Activiti表名加上双引号（ACT_开头的表）
     sql = sql.replace(/\b(ACT_\w+)\b/g, '"$1"')
     // 给Activiti列名加上双引号（以_结尾的列名）
     sql = sql.replace(/\.(\w+_)\b/g, '."$1"')
+    // 给SQL中的别名加上双引号（AS后面的驼峰命名）
+    sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)\b/gi, 'AS "$1"')
     return sql
 }
 
@@ -537,7 +539,7 @@ async function queryWithCamelCase(db, dbType, sql, params = []) {
     } else {
         const quotedSql = quotePostgresIdentifiers(sql)
         const result = await db.query(quotedSql, params)
-        return convertToCamelCase(result.rows)
+        return result.rows
     }
 }
 
@@ -548,7 +550,7 @@ async function query(db, dbType, sql, params = []) {
     } else if (dbType === 'postgres' || dbType === 'hgdatabase') {
         const quotedSql = quotePostgresIdentifiers(sql)
         const result = await db.query(quotedSql, params)
-        return convertToCamelCase(result.rows)
+        return result.rows
     }
 }
 
