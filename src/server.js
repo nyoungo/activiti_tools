@@ -592,8 +592,8 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
         const [rows] = await db.execute(countSql, countParams)
         total = rows[0]?.total || 0
     } else {
-        const result = await db.query(countSql, countParams)
-        total = parseInt(result.rows[0]?.total || 0)
+        const rows = await query(db, dbType, countSql, countParams)
+        total = parseInt(rows[0]?.total || 0)
     }
     
     if (dbType === 'mysql') {
@@ -604,14 +604,7 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
         params.push(size, offset)
     }
     
-    let instances
-    if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, params)
-        instances = rows
-    } else {
-        const result = await db.query(sql, params)
-        instances = result.rows
-    }
+    const instances = await query(db, dbType, sql, params)
     
     for (const inst of instances) {
         let taskSql = `
@@ -621,35 +614,19 @@ async function getProcessInstances(db, dbType, offset, size, keyword) {
             LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
             WHERE t.PROC_INST_ID_ = ?
         `
-        if (dbType === 'postgres') {
-            taskSql = taskSql.replace(/\?/, '$1')
-        }
-        if (dbType === 'mysql') {
-            const [rows] = await db.execute(taskSql, [inst.id])
-            inst.currentTasks = rows
-        } else {
-            const result = await db.query(taskSql, [inst.id])
-            inst.currentTasks = result.rows
-        }
+        const taskRows = await query(db, dbType, taskSql, [inst.id])
+        inst.currentTasks = taskRows
         
         inst.isFinished = inst.currentTasks.length === 0
         
         if (!inst.isFinished) {
             let historySql = `
-                SELECT END_TIME_ 
+                SELECT END_TIME_ as endTime 
                 FROM ACT_HI_PROCINST 
                 WHERE PROC_INST_ID_ = ?
             `
-            if (dbType === 'postgres') {
-                historySql = historySql.replace(/\?/, '$1')
-            }
-            if (dbType === 'mysql') {
-                const [rows] = await db.execute(historySql, [inst.id])
-                inst.isFinished = rows.length > 0 && rows[0].END_TIME_ !== null
-            } else {
-                const result = await db.query(historySql, [inst.id])
-                inst.isFinished = result.rows.length > 0 && result.rows[0].END_TIME_ !== null
-            }
+            const historyRows = await query(db, dbType, historySql, [inst.id])
+            inst.isFinished = historyRows.length > 0 && historyRows[0].endTime !== null
         }
     }
     
@@ -677,14 +654,8 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
     let instance
     let isFinished = false
     
-    if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, [instanceId])
-        instance = rows[0]
-    } else {
-        sql = sql.replace(/\?/, '$1')
-        const result = await db.query(sql, [instanceId])
-        instance = result.rows[0]
-    }
+    const rows = await query(db, dbType, sql, [instanceId])
+    instance = rows[0]
     
     if (!instance) {
         let historySql = `
@@ -704,14 +675,8 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
             LEFT JOIN sys_user su ON h.START_USER_ID_ = su.id
             WHERE h.ID_ = ?
         `
-        if (dbType === 'mysql') {
-            const [rows] = await db.execute(historySql, [instanceId])
-            instance = rows[0]
-        } else {
-            historySql = historySql.replace(/\?/, '$1')
-            const result = await db.query(historySql, [instanceId])
-            instance = result.rows[0]
-        }
+        const historyRows = await query(db, dbType, historySql, [instanceId])
+        instance = historyRows[0]
         
         if (instance) {
             isFinished = true
@@ -728,25 +693,15 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
             LEFT JOIN sys_user su ON t.ASSIGNEE_ = su.id
             WHERE t.PROC_INST_ID_ = ?
         `
-        if (dbType === 'postgres') {
-            taskSql = taskSql.replace(/\?/, '$1')
-        }
         
-        let rows
-        if (dbType === 'mysql') {
-            const [result] = await db.execute(taskSql, [instanceId])
-            rows = result
-        } else {
-            const result = await db.query(taskSql, [instanceId])
-            rows = result.rows
-        }
+        const taskRows = await query(db, dbType, taskSql, [instanceId])
         
-        for (const row of rows) {
+        for (const row of taskRows) {
             row.candidates = []
         }
         
-        if (rows.length > 0) {
-            const taskIds = rows.map(r => r.id)
+        if (taskRows.length > 0) {
+            const taskIds = taskRows.map(r => r.id)
             const placeholders = dbType === 'mysql' 
                 ? taskIds.map(() => '?').join(',')
                 : taskIds.map((_, i) => `$${i + 1}`).join(',')
@@ -758,14 +713,7 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
                 WHERE il.TASK_ID_ IN (${placeholders}) AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
             `
             
-            let candidates
-            if (dbType === 'mysql') {
-                const [result] = await db.execute(candidateSql, taskIds)
-                candidates = result
-            } else {
-                const result = await db.query(candidateSql, taskIds)
-                candidates = result.rows
-            }
+            const candidates = await query(db, dbType, candidateSql, taskIds)
             
             const candidateMap = {}
             for (const c of candidates) {
@@ -775,12 +723,12 @@ async function getProcessInstanceDetail(db, dbType, instanceId) {
                 candidateMap[c.taskId].push(c)
             }
             
-            for (const row of rows) {
+            for (const row of taskRows) {
                 row.candidates = candidateMap[row.id] || []
             }
         }
         
-        instance.currentTasks = rows
+        instance.currentTasks = taskRows
     }
     
     return instance
@@ -838,8 +786,8 @@ async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
         const [rows] = await db.execute(countSql, countParams)
         total = rows[0]?.total || 0
     } else {
-        const result = await db.query(countSql, countParams)
-        total = parseInt(result.rows[0]?.total || 0)
+        const rows = await query(db, dbType, countSql, countParams)
+        total = parseInt(rows[0]?.total || 0)
     }
     
     if (dbType === 'mysql') {
@@ -850,14 +798,7 @@ async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
         params.push(size, offset)
     }
     
-    let instances
-    if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, params)
-        instances = rows
-    } else {
-        const result = await db.query(sql, params)
-        instances = result.rows
-    }
+    const instances = await query(db, dbType, sql, params)
     
     for (const inst of instances) {
         inst.isFinished = true
@@ -872,20 +813,10 @@ async function getProcessVariables(db, dbType, instanceId) {
         FROM ACT_RU_VARIABLE
         WHERE PROC_INST_ID_ = ?
     `
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/, '$1')
-    }
     
-    let variables
-    if (dbType === 'mysql') {
-        const [rows] = await db.execute(sql, [instanceId])
-        variables = rows
-    } else {
-        const result = await db.query(sql, [instanceId])
-        variables = result.rows
-    }
+    const rows = await query(db, dbType, sql, [instanceId])
     
-    return variables.map(v => {
+    return rows.map(v => {
         let value
         switch (v.type) {
             case 'string': value = v.textValue; break
@@ -986,14 +917,7 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
         `
     }
     
-    let rows
-    if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, [definitionId])
-        rows = result
-    } else {
-        const result = await db.query(sql, [definitionId])
-        rows = result.rows
-    }
+    const rows = await query(db, dbType, sql, [definitionId])
     
     if (rows.length > 0) {
         const bytes = rows[0].bytes
@@ -1018,19 +942,7 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
         LIMIT 1
     `
     
-    let params = [definitionId]
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/, '$1')
-    }
-    
-    let rows
-    if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, params)
-        rows = result
-    } else {
-        const result = await db.query(sql, params)
-        rows = result.rows
-    }
+    const rows = await query(db, dbType, sql, [definitionId])
     
     if (rows.length === 0) {
         throw new Error('流程定义或BPMN文件不存在')
@@ -1042,13 +954,9 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     let updateSql
     if (dbType === 'mysql') {
         updateSql = 'UPDATE ACT_GE_BYTEARRAY SET BYTES_ = ? WHERE ID_ = ?'
-    } else {
-        updateSql = 'UPDATE ACT_GE_BYTEARRAY SET BYTES_ = $1 WHERE ID_ = $2'
-    }
-    
-    if (dbType === 'mysql') {
         await db.execute(updateSql, [bytes, byteArrayId])
     } else {
+        updateSql = 'UPDATE ACT_GE_BYTEARRAY SET BYTES_ = $1 WHERE ID_ = $2'
         await db.query(updateSql, [bytes, byteArrayId])
     }
 }
@@ -1075,14 +983,7 @@ async function getAffectedInstances(db, dbType, definitionId) {
         `
     }
     
-    let rows
-    if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, [definitionId])
-        rows = result
-    } else {
-        const result = await db.query(sql, [definitionId])
-        rows = result.rows
-    }
+    const rows = await query(db, dbType, sql, [definitionId])
     
     if (rows.length > 0) {
         return {
@@ -1796,8 +1697,7 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
             LEFT JOIN sys_user su ON il.USER_ID_ = su.id
             WHERE il.TASK_ID_ = $1 AND il.TYPE_ = 'candidate' AND il.USER_ID_ IS NOT NULL
         `
-        const result = await db.query(sql, [taskId])
-        return result.rows
+        return await query(db, dbType, sql, [taskId])
     }
 }
 
