@@ -1183,20 +1183,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     const taskIdNew = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     
     if (dbType === 'mysql') {
-        // 1. 重新插入 ACT_RU_EXECUTION 记录
-        sql = `
-            INSERT INTO ACT_RU_EXECUTION (
-                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), 1, 1, 1)
-        `
-        await db.execute(sql, [instanceId, instanceId, procDefId])
-        
-        // 2. 清除 END_TIME_，重新激活流程实例
+        // 1. 清除 END_TIME_，重新激活流程实例
         sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
         await db.execute(sql, [instanceId])
         
-        // 3. 插入新任务
+        // 2. 插入新任务
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
@@ -1205,20 +1196,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee || null])
     } else {
-        // 1. 重新插入 ACT_RU_EXECUTION 记录
-        sql = `
-            INSERT INTO ACT_RU_EXECUTION (
-                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), 1, 1, 1)
-        `
-        await db.query(sql, [instanceId, instanceId, procDefId])
-        
-        // 2. 清除 END_TIME_，重新激活流程实例
+        // 1. 清除 END_TIME_，重新激活流程实例
         sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
         await db.query(sql, [instanceId])
         
-        // 3. 插入新任务
+        // 2. 插入新任务
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
