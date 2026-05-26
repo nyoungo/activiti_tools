@@ -162,7 +162,7 @@ app.post('/api/connect', async (req, res) => {
 
 app.post('/api/disconnect', (req, res) => {
     if (activitiDb) {
-        if (dbConfig?.dbType === 'postgres') {
+        if (dbConfig?.dbType === 'postgres' || dbConfig?.dbType === 'hgdatabase') {
             activitiDb.end()
         } else {
             activitiDb.end()
@@ -1908,7 +1908,7 @@ async function start() {
 process.on('SIGINT', () => {
     console.log('\n正在关闭服务器...')
     if (activitiDb) {
-        if (dbConfig?.dbType === 'postgres') {
+        if (dbConfig?.dbType === 'postgres' || dbConfig?.dbType === 'hgdatabase') {
             activitiDb.end()
         } else if (activitiDb.end) {
             activitiDb.end()
