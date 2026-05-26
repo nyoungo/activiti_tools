@@ -818,7 +818,7 @@ async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
 
 async function getProcessVariables(db, dbType, instanceId) {
     let sql = `
-        SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as doubleValue, LONG_ as longValue
+        SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as `double`, LONG_ as longValue
         FROM ACT_RU_VARIABLE
         WHERE PROC_INST_ID_ = ?
     `
@@ -1154,8 +1154,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 9. 恢复变量
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-                FROM ACT_HI_VARINST 
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
             `
@@ -1284,9 +1284,9 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-                FROM ACT_HI_VARINST 
-                WHERE PROC_INST_ID_ = $1 
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
             `
             const varResult = await client.query(sql, [instanceId])
@@ -1471,8 +1471,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 8. 恢复变量
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-                FROM ACT_HI_VARINST 
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
             `
@@ -1597,9 +1597,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-                FROM ACT_HI_VARINST 
-                WHERE PROC_INST_ID_ = $1 
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
             `
             const varResult = await client.query(sql, [instanceId])
