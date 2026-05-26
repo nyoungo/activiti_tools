@@ -1074,9 +1074,9 @@ async function getHistoryTasks(db, dbType, instanceId) {
 async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     let sql, params
     
-    // 获取目标历史任务信息
+    // 获取目标历史任务信息（包括创建时间）
     sql = `
-        SELECT t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_
+        SELECT t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_, t.CREATE_TIME_
         FROM ACT_HI_TASKINST t
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
@@ -1102,11 +1102,21 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     const procDefId = rows[0].PROC_DEF_ID_
     const taskName = rows[0].NAME_ || taskDefKey
     const assignee = rows[0].ASSIGNEE_
+    const targetCreateTime = rows[0].CREATE_TIME_
     
     // 生成新任务ID - 使用更短的方式
     const taskIdNew = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     
     if (dbType === 'mysql') {
+        // 先清理：删除目标任务创建时间之后的所有历史数据
+        await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ? AND TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = ? AND CREATE_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND CREATE_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = ? AND TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ? AND START_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? AND ID_ != ?', [instanceId, targetTaskId])
+        
+        // 清理运行时数据
         await db.execute('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?)', [instanceId])
         await db.execute('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?', [instanceId])
         await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
@@ -1159,6 +1169,15 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             ])
         }
     } else {
+        // 先清理：删除目标任务创建时间之后的所有历史数据
+        await db.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1 AND TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = $1 AND CREATE_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = $1 AND CREATE_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = $1 AND TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1 AND START_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = $1 AND ID_ != $2', [instanceId, targetTaskId])
+        
+        // 清理运行时数据
         await db.query('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1)', [instanceId])
         await db.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
         await db.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
@@ -1217,7 +1236,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     
     // 1. 获取流程实例的历史信息（业务Key、发起人等）
     sql = `
-        SELECT p.BUSINESS_KEY_, p.START_USER_ID_, t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_
+        SELECT p.BUSINESS_KEY_, p.START_USER_ID_, t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_, t.CREATE_TIME_
         FROM ACT_HI_TASKINST t
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
@@ -1246,11 +1265,20 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     const procDefId = rows[0].PROC_DEF_ID_
     const taskName = rows[0].NAME_ || taskDefKey
     const assignee = rows[0].ASSIGNEE_
+    const targetCreateTime = rows[0].CREATE_TIME_
     
     // 2. 生成新任务ID
     const taskIdNew = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     
     if (dbType === 'mysql') {
+        // 先清理：删除目标任务创建时间之后的所有历史数据
+        await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ? AND TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = ? AND CREATE_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND CREATE_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = ? AND TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ? AND START_TIME_ >= ?', [instanceId, targetCreateTime])
+        await db.execute('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? AND ID_ != ?', [instanceId, targetTaskId])
+        
         // 3. 清除 END_TIME_，重新激活流程实例，并恢复业务Key和发起人信息
         sql = `
             UPDATE ACT_HI_PROCINST 
@@ -1302,6 +1330,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             ])
         }
     } else {
+        // 先清理：删除目标任务创建时间之后的所有历史数据
+        await db.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1 AND TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = $1 AND CREATE_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = $1 AND CREATE_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = $1 AND TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1 AND START_TIME_ >= $2', [instanceId, targetCreateTime])
+        await db.query('DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = $1 AND ID_ != $2', [instanceId, targetTaskId])
+        
         // 瀚高/PostgreSQL 版本
         sql = `
             UPDATE ACT_HI_PROCINST 
