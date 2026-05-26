@@ -520,10 +520,9 @@ function convertToCamelCase(obj) {
     return obj
 }
 
-// 给PostgreSQL/瀚高数据库的SQL中的Activiti表名和列名加上双引号（保持大写）
+// 给PostgreSQL/瀚高数据库的SQL中的别名加上双引号（保持驼峰命名）
 function quotePostgresIdentifiers(sql) {
-    sql = sql.replace(/\b(ACT_\w+)\b/g, '"$1"')
-    sql = sql.replace(/\.(\w+_)\b/g, '."$1"')
+    sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)\b/gi, 'AS "$1"')
     return sql
 }
 
