@@ -458,7 +458,7 @@ async function testConnection(config) {
                 database: config.database
             }
             if (config.schema) {
-                poolConfig.searchPath = config.schema
+                poolConfig.options = `-c search_path=${config.schema}`
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
@@ -489,7 +489,7 @@ async function createConnection(config) {
             database: config.database
         }
         if (config.schema) {
-            poolConfig.searchPath = config.schema
+            poolConfig.options = `-c search_path=${config.schema}`
         }
         return new Pool(poolConfig)
     }
@@ -520,21 +520,24 @@ function convertToCamelCase(obj) {
     return obj
 }
 
-// 给PostgreSQL/瀚高数据库的SQL中的别名加上双引号（保持驼峰命名）
+// 给PostgreSQL/瀚高数据库的SQL中的所有标识符加双引号（保持大小写）
 function quotePostgresIdentifiers(sql) {
-    sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)\b/gi, 'AS "$1"')
+    // 替换 FROM/JOIN 后面的表名（大写开头）
+    sql = sql.replace(/\b(FROM|JOIN|INTO|UPDATE)\s+([A-Z][A-Z_0-9]*)/gi, '$1 "$2"')
+    // 替换列名前面的表别名（列名以大写字母开头，包含下划线）
+    sql = sql.replace(/([a-z])\.([A-Z][A-Z0-9_]*_)/gi, '$1."$2"')
+    // 给别名加双引号（驼峰命名）
+    sql = sql.replace(/\bas\s+([a-z][a-zA-Z0-9]*)/gi, 'AS "$1"')
     return sql
 }
 
 async function query(db, dbType, sql, params = []) {
     let rows
-    console.log('[DEBUG SQL]', sql.substring(0, 200))
-    if (dbType === 'mysql') {
+        if (dbType === 'mysql') {
         [rows] = await db.execute(sql, params)
     } else {
         const quotedSql = quotePostgresIdentifiers(sql)
-        console.log('[DEBUG QUOTED]', quotedSql.substring(0, 200))
-        const result = await db.query(quotedSql, params)
+                const result = await db.query(quotedSql, params)
         rows = result.rows
     }
     return convertToCamelCase(rows)
