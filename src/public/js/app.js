@@ -462,7 +462,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
                                 <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
                                 <td>
-                                    ${!isFinished ? '<button class="btn btn-small btn-danger" onclick="returnToTask(\'' + t.id + '\', \'' + (t.name || t.id) + '\')">退回此处</button>' : ''}
+                                    <button class="btn btn-small btn-danger" onclick="returnToTask('${t.id}', '${t.name || t.id}', ${isFinished})">退回此处</button>
                                 </td>
                             </tr>
                         `).join('')}
@@ -521,10 +521,19 @@ async function deleteVariable(name) {
 }
 
 // 直接退回到任务
-async function returnToTask(taskId, taskName) {
-    if (!confirm(`确定要退回到任务「${taskName}」吗？这将重置流程状态。`)) return
+async function returnToTask(taskId, taskName, isFinished) {
+    const actionText = isFinished ? '重新激活并退回到' : '退回到'
+    const confirmMsg = isFinished 
+        ? `⚠️ 已结束流程退回警告：\n\n此操作将重新激活已结束的流程实例！\n\n确定要将流程「${actionText}」任务「${taskName}」吗？`
+        : `确定要将流程${actionText}任务「${taskName}」吗？这将重置流程状态。`
+    
+    if (!confirm(confirmMsg)) return
 
-    const result = await api.post(`/api/instances/${state.currentInstanceId}/jump-to-task`, { taskId: taskId })
+    const apiUrl = isFinished 
+        ? `/api/instances/${state.currentInstanceId}/jump-to-finished-task`
+        : `/api/instances/${state.currentInstanceId}/jump-to-task`
+
+    const result = await api.post(apiUrl, { taskId: taskId })
 
     if (result.success) {
         alert('退回成功')

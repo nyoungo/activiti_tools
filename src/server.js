@@ -344,6 +344,20 @@ app.post('/api/instances/:id/jump-to-task', async (req, res) => {
     }
 })
 
+app.post('/api/instances/:id/jump-to-finished-task', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const { taskId } = req.body
+        await jumpToFinishedHistoryTask(activitiDb, dbConfig.dbType, req.params.id, taskId)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.post('/api/tasks/:taskId/set-assignee', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -1119,6 +1133,90 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         `
         await db.query(sql, [instanceId])
         
+        sql = `
+            INSERT INTO ACT_RU_TASK (
+                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, $4, $5, $6, $7)
+        `
+        await db.query(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+    }
+}
+
+async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
+    let sql, params
+    
+    // 获取目标历史任务信息
+    sql = `
+        SELECT t.TASK_DEF_KEY_, t.PROC_DEF_ID_, t.NAME_, t.ASSIGNEE_
+        FROM ACT_HI_TASKINST t
+        WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
+    `
+    params = [targetTaskId, instanceId]
+    if (dbType === 'postgres') {
+        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, params)
+        rows = result
+    } else {
+        const result = await db.query(sql, params)
+        rows = result.rows
+    }
+    
+    if (rows.length === 0) {
+        throw new Error('历史任务不存在')
+    }
+    
+    const taskDefKey = rows[0].TASK_DEF_KEY_
+    const procDefId = rows[0].PROC_DEF_ID_
+    const taskName = rows[0].NAME_ || taskDefKey
+    const assignee = rows[0].ASSIGNEE_
+    
+    // 生成新任务ID
+    const taskIdNew = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    
+    if (dbType === 'mysql') {
+        // 1. 重新插入 ACT_RU_EXECUTION 记录
+        sql = `
+            INSERT INTO ACT_RU_EXECUTION (
+                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
+                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
+                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+        `
+        await db.execute(sql, [instanceId, instanceId, procDefId])
+        
+        // 2. 清除 END_TIME_，重新激活流程实例
+        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+        await db.execute(sql, [instanceId])
+        
+        // 3. 插入新任务
+        sql = `
+            INSERT INTO ACT_RU_TASK (
+                ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
+                PROC_INST_ID_, PROC_DEF_ID_, EXECUTION_ID_, ASSIGNEE_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, ?, ?, ?)
+        `
+        await db.execute(sql, [taskIdNew, taskName, taskDefKey, instanceId, procDefId, instanceId, assignee])
+    } else {
+        // 1. 重新插入 ACT_RU_EXECUTION 记录
+        sql = `
+            INSERT INTO ACT_RU_EXECUTION (
+                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
+                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
+                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+        `
+        await db.query(sql, [instanceId, instanceId, procDefId])
+        
+        // 2. 清除 END_TIME_，重新激活流程实例
+        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+        await db.query(sql, [instanceId])
+        
+        // 3. 插入新任务
         sql = `
             INSERT INTO ACT_RU_TASK (
                 ID_, REV_, NAME_, PARENT_TASK_ID_, DESCRIPTION_, TASK_DEF_KEY_,
