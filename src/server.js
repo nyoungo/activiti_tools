@@ -532,11 +532,15 @@ async function query(db, dbType, sql, params = []) {
     if (dbType === 'mysql') {
         [rows] = await db.execute(sql, params)
     } else {
-        const quotedSql = quotePostgresIdentifiers(sql)
-        console.log('[DEBUG] SQL:', sql.substring(0, 100))
-        console.log('[DEBUG] QUOTED:', quotedSql.substring(0, 100))
-        const result = await db.query(quotedSql, params)
-        rows = result.rows
+        try {
+            const quotedSql = quotePostgresIdentifiers(sql)
+            const result = await db.query(quotedSql, params)
+            rows = result.rows
+        } catch (err) {
+            console.error('[SQL ERROR]', err.message)
+            console.error('[SQL QUERY]', quotedSql || sql)
+            throw err
+        }
     }
     return convertToCamelCase(rows)
 }
