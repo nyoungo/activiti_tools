@@ -304,6 +304,19 @@ app.put('/api/definitions/:id/xml', async (req, res) => {
     }
 })
 
+app.get('/api/definitions/:id/affected-instances', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const result = await getAffectedInstances(activitiDb, dbConfig.dbType, req.params.id)
+        res.json(result)
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/instances/:id/history-tasks', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -911,6 +924,48 @@ async function updateProcessDefinitionXml(db, dbType, definitionId, xml) {
     }
 }
 
+async function getAffectedInstances(db, dbType, definitionId) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = `
+            SELECT 
+                COUNT(*) as total,
+                MIN(START_TIME_) as earliestStart,
+                MAX(START_TIME_) as latestStart
+            FROM ACT_HI_PROCINST
+            WHERE PROC_DEF_ID_ = ?
+        `
+    } else {
+        sql = `
+            SELECT 
+                COUNT(*) as total,
+                MIN(START_TIME_) as earliestStart,
+                MAX(START_TIME_) as latestStart
+            FROM ACT_HI_PROCINST
+            WHERE PROC_DEF_ID_ = $1
+        `
+    }
+    
+    let rows
+    if (dbType === 'mysql') {
+        const [result] = await db.execute(sql, [definitionId])
+        rows = result
+    } else {
+        const result = await db.query(sql, [definitionId])
+        rows = result.rows
+    }
+    
+    if (rows.length > 0) {
+        return {
+            total: parseInt(rows[0].total || 0),
+            earliestStart: rows[0].earliestStart,
+            latestStart: rows[0].latestStart
+        }
+    }
+    
+    return { total: 0, earliestStart: null, latestStart: null }
+}
+
 async function getHistoryTasks(db, dbType, instanceId) {
     let sql = `
         SELECT 
@@ -1021,20 +1076,39 @@ async function setTaskAssignee(db, dbType, taskId, assignee) {
 }
 
 async function addTaskIdentityLink(db, dbType, taskId, userId, type) {
-    const id = `${taskId}-${userId}-${type}`
+    let idSql
     let sql
+    let params
+    
     if (dbType === 'mysql') {
+        idSql = 'SELECT UUID() as id'
         sql = `
             INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
             VALUES (?, 1, ?, ?, NULL, ?, NULL, NULL)
         `
-        await db.execute(sql, [id, type, userId, taskId])
     } else {
+        idSql = 'SELECT gen_random_uuid() as id'
         sql = `
             INSERT INTO ACT_RU_IDENTITYLINK (ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_, PROC_DEF_ID_)
             VALUES ($1, 1, $2, $3, NULL, $4, NULL, NULL)
         `
-        await db.query(sql, [id, type, userId, taskId])
+    }
+    
+    let idResult
+    if (dbType === 'mysql') {
+        const [rows] = await db.execute(idSql)
+        idResult = rows[0].id
+    } else {
+        const result = await db.query(idSql)
+        idResult = result.rows[0].id
+    }
+    
+    params = [idResult, type, userId, taskId]
+    
+    if (dbType === 'mysql') {
+        await db.execute(sql, params)
+    } else {
+        await db.query(sql, params)
     }
 }
 
