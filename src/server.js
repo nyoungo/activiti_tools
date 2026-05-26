@@ -820,13 +820,13 @@ async function getProcessVariables(db, dbType, instanceId) {
     let sql
     if (dbType === 'mysql') {
         sql = `
-            SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`
+            SELECT NAME_ as name, TYPE_ as \`type\`, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = ?
         `
     } else {
         sql = `
-            SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long"
+            SELECT NAME_ as name, TYPE_ as "type", TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long"
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = $1
         `
@@ -905,7 +905,7 @@ async function getProcessDefinitions(db, dbType) {
         `
     } else {
         sql = `
-            SELECT ID_ as id, KEY_ as key, NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
+            SELECT ID_ as id, KEY_ as "key", NAME_ as name, VERSION_ as version, RESOURCE_NAME_ as resourceName
             FROM ACT_RE_PROCDEF
             ORDER BY KEY_, VERSION_ DESC
         `
@@ -1118,7 +1118,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 5. 查询身份关联（候选人）
             sql = `
-                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
@@ -1163,7 +1163,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 9. 恢复变量
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1248,7 +1248,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 查询身份关联（候选人）
             sql = `
-                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
@@ -1293,7 +1293,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -1435,7 +1435,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 4. 查询身份关联（候选人）
             sql = `
-                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
@@ -1480,7 +1480,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 8. 恢复变量
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1561,7 +1561,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             // 查询身份关联（候选人）
             sql = `
-                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
@@ -1606,7 +1606,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             sql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -1749,7 +1749,7 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
     let sql
     if (dbType === 'mysql') {
         sql = `
-            SELECT il.ID_ as id, il.TYPE_ as type, il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
+            SELECT il.ID_ as id, il.TYPE_ as \`type\`, il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
                    su.username, su.realname
             FROM ACT_RU_IDENTITYLINK il
             LEFT JOIN sys_user su ON il.USER_ID_ = su.id
@@ -1759,7 +1759,7 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
         return rows
     } else {
         sql = `
-            SELECT il.ID_ as id, il.TYPE_ as type, il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
+            SELECT il.ID_ as id, il.TYPE_ as "type", il.USER_ID_ as userId, il.GROUP_ID_ as groupId,
                    su.username, su.realname
             FROM ACT_RU_IDENTITYLINK il
             LEFT JOIN sys_user su ON il.USER_ID_ = su.id
