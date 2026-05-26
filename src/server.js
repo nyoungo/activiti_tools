@@ -401,6 +401,20 @@ app.delete('/api/tasks/:taskId/identitylink', async (req, res) => {
     }
 })
 
+app.delete('/api/instances/:id', async (req, res) => {
+    if (!activitiDb) {
+        return res.status(400).json({ error: '未连接到数据库' })
+    }
+    
+    try {
+        const instanceId = req.params.id
+        await deleteProcessInstance(activitiDb, dbConfig.dbType, instanceId)
+        res.json({ success: true })
+    } catch (error) {
+        res.status(500).json({ error: error.message })
+    }
+})
+
 app.get('/api/tasks/:taskId/identitylinks', async (req, res) => {
     if (!activitiDb) {
         return res.status(400).json({ error: '未连接到数据库' })
@@ -1584,6 +1598,101 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
         `
         const result = await db.query(sql, [taskId])
         return result.rows
+    }
+}
+
+async function deleteProcessInstance(db, dbType, instanceId) {
+    let sql
+    if (dbType === 'mysql') {
+        sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_JOB WHERE PROCESS_INSTANCE_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_EVENT_SUBSCR WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_INCIDENT WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_IDENTITYLINK WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = ?'
+        await db.execute(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_PROCINST WHERE ID_ = ?'
+        await db.execute(sql, [instanceId])
+    } else {
+        sql = 'DELETE FROM ACT_RU_IDENTITYLINK WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_JOB WHERE PROCESS_INSTANCE_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_EVENT_SUBSCR WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_RU_INCIDENT WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_IDENTITYLINK WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_DETAIL WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_ATTACHMENT WHERE PROC_INST_ID_ = $1'
+        await db.query(sql, [instanceId])
+        
+        sql = 'DELETE FROM ACT_HI_PROCINST WHERE ID_ = $1'
+        await db.query(sql, [instanceId])
     }
 }
 

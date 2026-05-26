@@ -312,6 +312,7 @@ async function loadInstances() {
                 <td><span class="status-tag ${inst.isFinished ? 'status-finished' : 'status-running'}">${inst.isFinished ? '已结束' : '运行中'}</span></td>
                 <td>
                     <button class="btn btn-small btn-primary" onclick="showInstanceDetail('${inst.id}', ${inst.isFinished})">详情</button>
+                    <button class="btn btn-small btn-danger" onclick="deleteInstance('${inst.id}')">删除</button>
                 </td>
             </tr>
         `).join('')
@@ -518,6 +519,22 @@ async function deleteVariable(name) {
     if (!confirm('确定删除此变量吗？')) return
     await api.delete(`/api/instances/${state.currentInstanceId}/variables/${name}`)
     showInstanceDetail(state.currentInstanceId)
+}
+
+// 删除流程实例
+async function deleteInstance(instanceId) {
+    if (!confirm('⚠️ 警告：删除流程实例将删除所有相关数据，包括运行时数据和历史记录！\n\n确定要删除此流程实例吗？')) {
+        return
+    }
+
+    const result = await api.delete(`/api/instances/${instanceId}`)
+
+    if (result.success) {
+        alert('删除成功')
+        loadInstances()
+    } else {
+        alert('删除失败: ' + result.error)
+    }
 }
 
 // 直接退回到任务
