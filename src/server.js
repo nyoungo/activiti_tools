@@ -532,13 +532,18 @@ async function query(db, dbType, sql, params = []) {
     if (dbType === 'mysql') {
         [rows] = await db.execute(sql, params)
     } else {
+        // 转换 ? 占位符为 $1, $2, $3...
+        let pgSql = sql
+        let paramIndex = 1
+        pgSql = pgSql.replace(/\?/g, () => "$" + paramIndex++)
+
         try {
-            const quotedSql = quotePostgresIdentifiers(sql)
+            const quotedSql = quotePostgresIdentifiers(pgSql)
             const result = await db.query(quotedSql, params)
             rows = result.rows
         } catch (err) {
             console.error('[SQL ERROR]', err.message)
-            console.error('[SQL QUERY]', quotedSql || sql)
+            console.error('[SQL QUERY]', pgSql)
             throw err
         }
     }
