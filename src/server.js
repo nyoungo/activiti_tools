@@ -928,8 +928,11 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
     
     const rows = await query(db, dbType, sql, [definitionId])
     
+    console.log('[DEBUG] XML rows:', JSON.stringify(rows[0]))
     if (rows.length > 0) {
         const bytes = rows[0].bytes
+        console.log('[DEBUG] bytes type:', typeof bytes, bytes instanceof Buffer, bytes instanceof Uint8Array)
+        console.log('[DEBUG] bytes:', bytes)
         if (Buffer.isBuffer(bytes)) {
             return bytes.toString('utf8')
         } else if (bytes instanceof Uint8Array) {
