@@ -818,7 +818,7 @@ async function getFinishedProcessInstances(db, dbType, offset, size, keyword) {
 
 async function getProcessVariables(db, dbType, instanceId) {
     let sql = `
-        SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as doubleValue, LONG_ as longValue
+        SELECT NAME_ as name, TYPE_ as type, TEXT_ as textValue, DOUBLE_ as `double`, LONG_ as longValue
         FROM ACT_RU_VARIABLE
         WHERE PROC_INST_ID_ = ?
     `
@@ -1089,237 +1089,262 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     }
     
     if (dbType === 'mysql') {
-        // 3. 删除当前运行时的任务、变量、身份关联
-        await db.execute('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?)', [instanceId])
-        await db.execute('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?', [instanceId])
-        await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
-        await db.execute('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?', [instanceId])
-        
-        // 4. 更新执行实例状态，保持开始时间和发起人
-        sql = `
-            UPDATE ACT_RU_EXECUTION 
-            SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
-                START_TIME_ = ?, START_USER_ID_ = ?
-            WHERE ID_ = ?
-        `
-        await db.execute(sql, [taskData.startTime, taskData.startUserId, instanceId])
-        
-        // 5. 查询身份关联（候选人）
-        sql = `
-            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-            FROM ACT_HI_IDENTITYLINK
-            WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
-        `
-        const [identityLinks] = await db.execute(sql, [targetTaskId])
-        
-        // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
-        let taskAssignee = null
-        if (identityLinks.length === 0) {
-            taskAssignee = taskData.taskAssignee
-        }
-        
-        // 7. 创建任务，使用原来的任务ID
-        sql = `
-            INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PRIORITY_, 
-                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-        `
-        await db.execute(sql, [
-            targetTaskId, 
-            taskData.taskName, 
-            taskData.priority || 50, 
-            taskData.taskCreateTime, 
-            taskAssignee,
-            instanceId, 
-            instanceId, 
-            taskData.procDefId, 
-            taskData.taskDefKey
-        ])
-        
-        // 8. 恢复身份关联（仅当有候选人时）
-        for (const link of identityLinks) {
-            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            sql = `
-                INSERT INTO ACT_RU_IDENTITYLINK (
-                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?)
-            `
-            await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
-        }
-        
-        // 9. 恢复变量
-        sql = `
-            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-            FROM ACT_HI_VARINST 
-            WHERE PROC_INST_ID_ = ? 
-              AND NAME_ IS NOT NULL
-        `
-        const [varRows] = await db.execute(sql, [instanceId])
-        
-        for (const v of varRows) {
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.varType || 'string'
+        // 开启事务
+        await db.beginTransaction()
+        try {
+            // 3. 删除当前运行时的任务、变量、身份关联
+            await db.execute('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?)', [instanceId])
+            await db.execute('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = ?', [instanceId])
+            await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
+            await db.execute('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?', [instanceId])
             
+            // 4. 更新执行实例状态，保持开始时间和发起人
             sql = `
-                INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                    TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE ACT_RU_EXECUTION 
+                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
+                    START_TIME_ = ?, START_USER_ID_ = ?
+                WHERE ID_ = ?
+            `
+            await db.execute(sql, [taskData.startTime, taskData.startUserId, instanceId])
+            
+            // 5. 查询身份关联（候选人）
+            sql = `
+                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                FROM ACT_HI_IDENTITYLINK
+                WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
+            `
+            const [identityLinks] = await db.execute(sql, [targetTaskId])
+            
+            // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
+            let taskAssignee = null
+            if (identityLinks.length === 0) {
+                taskAssignee = taskData.taskAssignee
+            }
+            
+            // 7. 创建任务，使用原来的任务ID
+            sql = `
+                INSERT INTO ACT_RU_TASK (
+                    ID_, REV_, NAME_, PRIORITY_, 
+                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             `
             await db.execute(sql, [
-                varId, 
-                v.name, 
-                varType, 
+                targetTaskId, 
+                taskData.taskName, 
+                taskData.priority || 50, 
+                taskData.taskCreateTime, 
+                taskAssignee,
                 instanceId, 
-                v.text, 
-                v.text2, 
-                v.double, 
-                v.long, 
-                v.bytearrayId
+                instanceId, 
+                taskData.procDefId, 
+                taskData.taskDefKey
             ])
-        }
-        
-        // 10. 删除目标任务之后的历史活动
-        if (taskIdsToDelete.length > 0) {
-            const placeholders = taskIdsToDelete.map(() => '?').join(',')
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-            await db.execute(sql, taskIdsToDelete)
             
-            // 11. 删除目标任务之后的历史任务
-            sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-            await db.execute(sql, taskIdsToDelete)
+            // 8. 恢复身份关联（仅当有候选人时）
+            for (const link of identityLinks) {
+                const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                sql = `
+                    INSERT INTO ACT_RU_IDENTITYLINK (
+                        ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                `
+                await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+            }
+            
+            // 9. 恢复变量
+            sql = `
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = ? 
+                  AND NAME_ IS NOT NULL
+            `
+            const [varRows] = await db.execute(sql, [instanceId])
+            
+            for (const v of varRows) {
+                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                const varType = v.varType || 'string'
+                
+                sql = `
+                    INSERT INTO ACT_RU_VARIABLE (
+                        ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
+                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                `
+                await db.execute(sql, [
+                    varId, 
+                    v.name, 
+                    varType, 
+                    instanceId, 
+                    v.text, 
+                    v.text2, 
+                    v.double, 
+                    v.long, 
+                    v.bytearrayId
+                ])
+            }
+            
+            // 10. 删除目标任务之后的历史活动
+            if (taskIdsToDelete.length > 0) {
+                const placeholders = taskIdsToDelete.map(() => '?').join(',')
+                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await db.execute(sql, taskIdsToDelete)
+                
+                // 11. 删除目标任务之后的历史任务
+                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await db.execute(sql, taskIdsToDelete)
+            }
+            
+            // 12. 删除活动历史
+            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
+            await db.execute(sql, [instanceId])
+            
+            // 13. 更新目标历史任务
+            sql = `
+                UPDATE ACT_HI_TASKINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE ID_ = ?
+            `
+            await db.execute(sql, [targetTaskId])
+            
+            // 14. 更新历史流程实例
+            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+            await db.execute(sql, [instanceId])
+            
+            // 提交事务
+            await db.commit()
+        } catch (error) {
+            // 回滚事务
+            await db.rollback()
+            throw error
         }
-        
-        // 12. 删除活动历史
-        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-        await db.execute(sql, [instanceId])
-        
-        // 13. 更新目标历史任务
-        sql = `
-            UPDATE ACT_HI_TASKINST 
-            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
-            WHERE ID_ = ?
-        `
-        await db.execute(sql, [targetTaskId])
-        
-        // 14. 更新历史流程实例
-        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
-        await db.execute(sql, [instanceId])
     } else {
         // 瀚高/PostgreSQL 版本
-        await db.query('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1)', [instanceId])
-        await db.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
-        await db.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
-        await db.query('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1', [instanceId])
-        
-        sql = `
-            UPDATE ACT_RU_EXECUTION 
-            SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
-                START_TIME_ = $1, START_USER_ID_ = $2
-            WHERE ID_ = $3
-        `
-        await db.query(sql, [taskData.startTime, taskData.startUserId, instanceId])
-        
-        // 查询身份关联（候选人）
-        sql = `
-            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-            FROM ACT_HI_IDENTITYLINK
-            WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
-        `
-        const identityResult = await query(db, dbType, sql, [targetTaskId])
-        
-        // 确定任务审批人：如果没有候选人，使用历史任务的审批人
-        let taskAssignee = null
-        if (identityResult.length === 0) {
-            taskAssignee = taskData.taskAssignee
-        }
-        
-        // 创建任务，使用原来的任务ID
-        sql = `
-            INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PRIORITY_, 
-                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-            ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
-        `
-        await db.query(sql, [
-            targetTaskId, 
-            taskData.taskName, 
-            taskData.priority || 50, 
-            taskData.taskCreateTime, 
-            taskAssignee,
-            instanceId, 
-            instanceId, 
-            taskData.procDefId, 
-            taskData.taskDefKey
-        ])
-        
-        // 恢复身份关联（仅当有候选人时）
-        for (const link of identityResult) {
-            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            sql = `
-                INSERT INTO ACT_RU_IDENTITYLINK (
-                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6)
-            `
-            await db.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
-        }
-        
-        sql = `
-            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-            FROM ACT_HI_VARINST 
-            WHERE PROC_INST_ID_ = $1 
-              AND NAME_ IS NOT NULL
-        `
-        const varResult = await query(db, dbType, sql, [instanceId])
-        
-        for (const v of varResult) {
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.varType || 'string'
+        const client = await db.connect()
+        try {
+            await client.query('BEGIN')
+            
+            await client.query('DELETE FROM ACT_RU_IDENTITYLINK WHERE TASK_ID_ IN (SELECT ID_ FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1)', [instanceId])
+            await client.query('DELETE FROM ACT_RU_TASK WHERE PROC_INST_ID_ = $1', [instanceId])
+            await client.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
+            await client.query('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1', [instanceId])
             
             sql = `
-                INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                    TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                UPDATE ACT_RU_EXECUTION 
+                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
+                    START_TIME_ = $1, START_USER_ID_ = $2
+                WHERE ID_ = $3
             `
-            await db.query(sql, [
-                varId, 
-                v.name, 
-                varType, 
+            await client.query(sql, [taskData.startTime, taskData.startUserId, instanceId])
+            
+            // 查询身份关联（候选人）
+            sql = `
+                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                FROM ACT_HI_IDENTITYLINK
+                WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
+            `
+            const identityResult = await client.query(sql, [targetTaskId])
+            const identityLinks = identityResult.rows
+            
+            // 确定任务审批人：如果没有候选人，使用历史任务的审批人
+            let taskAssignee = null
+            if (identityLinks.length === 0) {
+                taskAssignee = taskData.taskAssignee
+            }
+            
+            // 创建任务，使用原来的任务ID
+            sql = `
+                INSERT INTO ACT_RU_TASK (
+                    ID_, REV_, NAME_, PRIORITY_, 
+                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+            `
+            await client.query(sql, [
+                targetTaskId, 
+                taskData.taskName, 
+                taskData.priority || 50, 
+                taskData.taskCreateTime, 
+                taskAssignee,
                 instanceId, 
-                v.text, 
-                v.text2, 
-                v.double, 
-                v.long, 
-                v.bytearrayId
+                instanceId, 
+                taskData.procDefId, 
+                taskData.taskDefKey
             ])
-        }
-        
-        // 删除目标任务之后的历史
-        if (taskIdsToDelete.length > 0) {
-            const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-            await db.query(sql, taskIdsToDelete)
             
-            sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-            await db.query(sql, taskIdsToDelete)
+            // 恢复身份关联（仅当有候选人时）
+            for (const link of identityLinks) {
+                const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                sql = `
+                    INSERT INTO ACT_RU_IDENTITYLINK (
+                        ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, $5, $6)
+                `
+                await client.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+            }
+            
+            sql = `
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = $1
+                  AND NAME_ IS NOT NULL
+            `
+            const varResult = await client.query(sql, [instanceId])
+            const varRows = varResult.rows
+            
+            for (const v of varRows) {
+                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                const varType = v.varType || 'string'
+                
+                sql = `
+                    INSERT INTO ACT_RU_VARIABLE (
+                        ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
+                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                `
+                await client.query(sql, [
+                    varId, 
+                    v.name, 
+                    varType, 
+                    instanceId, 
+                    v.text, 
+                    v.text2, 
+                    v.double, 
+                    v.long, 
+                    v.bytearrayId
+                ])
+            }
+            
+            // 删除目标任务之后的历史
+            if (taskIdsToDelete.length > 0) {
+                const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
+                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(sql, taskIdsToDelete)
+                
+                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await client.query(sql, taskIdsToDelete)
+            }
+            
+            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
+            await client.query(sql, [instanceId])
+            
+            sql = `
+                UPDATE ACT_HI_TASKINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE ID_ = $1
+            `
+            await client.query(sql, [targetTaskId])
+            
+            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+            await client.query(sql, [instanceId])
+            
+            await client.query('COMMIT')
+        } catch (error) {
+            await client.query('ROLLBACK')
+            throw error
+        } finally {
+            client.release()
         }
-        
-        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-        await db.query(sql, [instanceId])
-        
-        sql = `
-            UPDATE ACT_HI_TASKINST 
-            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
-            WHERE ID_ = $1
-        `
-        await db.query(sql, [targetTaskId])
-        
-        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
-        await db.query(sql, [instanceId])
     }
 }
 
@@ -1386,228 +1411,253 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     }
     
     if (dbType === 'mysql') {
-        // 3. 恢复执行实例，使用从历史表获得的所有信息
-        sql = `
-            INSERT INTO ACT_RU_EXECUTION (
-                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
-                PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
-                START_TIME_, START_USER_ID_
-            ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?)
-        `
-        await db.execute(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
-        
-        // 4. 查询身份关联（候选人）
-        sql = `
-            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-            FROM ACT_HI_IDENTITYLINK
-            WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
-        `
-        const [identityLinks] = await db.execute(sql, [targetTaskId])
-        
-        // 5. 确定任务审批人：如果没有候选人，使用历史任务的审批人
-        let taskAssignee = null
-        if (identityLinks.length === 0) {
-            taskAssignee = taskData.taskAssignee
-        }
-        
-        // 6. 创建任务，使用原来的任务ID
-        sql = `
-            INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PRIORITY_, 
-                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-        `
-        await db.execute(sql, [
-            targetTaskId, 
-            taskData.taskName, 
-            taskData.priority || 50, 
-            taskData.taskCreateTime, 
-            taskAssignee,
-            instanceId, 
-            instanceId, 
-            taskData.procDefId, 
-            taskData.taskDefKey
-        ])
-        
-        // 7. 恢复身份关联（仅当有候选人时）
-        for (const link of identityLinks) {
-            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+        // 开启事务
+        await db.beginTransaction()
+        try {
+            // 3. 恢复执行实例，使用从历史表获得的所有信息
             sql = `
-                INSERT INTO ACT_RU_IDENTITYLINK (
-                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                INSERT INTO ACT_RU_EXECUTION (
+                    ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                    PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
+                    START_TIME_, START_USER_ID_
+                ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?)
             `
-            await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
-        }
-        
-        // 8. 恢复变量
-        sql = `
-            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-            FROM ACT_HI_VARINST 
-            WHERE PROC_INST_ID_ = ? 
-              AND NAME_ IS NOT NULL
-        `
-        const [varRows] = await db.execute(sql, [instanceId])
-        
-        for (const v of varRows) {
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.varType || 'string'
+            await db.execute(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
             
+            // 4. 查询身份关联（候选人）
             sql = `
-                INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                    TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                FROM ACT_HI_IDENTITYLINK
+                WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
+            `
+            const [identityLinks] = await db.execute(sql, [targetTaskId])
+            
+            // 5. 确定任务审批人：如果没有候选人，使用历史任务的审批人
+            let taskAssignee = null
+            if (identityLinks.length === 0) {
+                taskAssignee = taskData.taskAssignee
+            }
+            
+            // 6. 创建任务，使用原来的任务ID
+            sql = `
+                INSERT INTO ACT_RU_TASK (
+                    ID_, REV_, NAME_, PRIORITY_, 
+                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             `
             await db.execute(sql, [
-                varId, 
-                v.name, 
-                varType, 
+                targetTaskId, 
+                taskData.taskName, 
+                taskData.priority || 50, 
+                taskData.taskCreateTime, 
+                taskAssignee,
                 instanceId, 
-                v.text, 
-                v.text2, 
-                v.double, 
-                v.long, 
-                v.bytearrayId
+                instanceId, 
+                taskData.procDefId, 
+                taskData.taskDefKey
             ])
-        }
-        
-        // 9. 删除目标任务之后的历史活动
-        if (taskIdsToDelete.length > 0) {
-            const placeholders = taskIdsToDelete.map(() => '?').join(',')
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-            await db.execute(sql, taskIdsToDelete)
             
-            // 10. 删除目标任务之后的历史任务
-            sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-            await db.execute(sql, taskIdsToDelete)
+            // 7. 恢复身份关联（仅当有候选人时）
+            for (const link of identityLinks) {
+                const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                sql = `
+                    INSERT INTO ACT_RU_IDENTITYLINK (
+                        ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                `
+                await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+            }
+            
+            // 8. 恢复变量
+            sql = `
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = ? 
+                  AND NAME_ IS NOT NULL
+            `
+            const [varRows] = await db.execute(sql, [instanceId])
+            
+            for (const v of varRows) {
+                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                const varType = v.varType || 'string'
+                
+                sql = `
+                    INSERT INTO ACT_RU_VARIABLE (
+                        ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
+                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                `
+                await db.execute(sql, [
+                    varId, 
+                    v.name, 
+                    varType, 
+                    instanceId, 
+                    v.text, 
+                    v.text2, 
+                    v.double, 
+                    v.long, 
+                    v.bytearrayId
+                ])
+            }
+            
+            // 9. 删除目标任务之后的历史活动
+            if (taskIdsToDelete.length > 0) {
+                const placeholders = taskIdsToDelete.map(() => '?').join(',')
+                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await db.execute(sql, taskIdsToDelete)
+                
+                // 10. 删除目标任务之后的历史任务
+                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await db.execute(sql, taskIdsToDelete)
+            }
+            
+            // 11. 删除活动历史
+            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
+            await db.execute(sql, [instanceId])
+            
+            // 12. 更新目标历史任务
+            sql = `
+                UPDATE ACT_HI_TASKINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE ID_ = ?
+            `
+            await db.execute(sql, [targetTaskId])
+            
+            // 13. 更新历史流程实例
+            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+            await db.execute(sql, [instanceId])
+            
+            // 提交事务
+            await db.commit()
+        } catch (error) {
+            // 回滚事务
+            await db.rollback()
+            throw error
         }
-        
-        // 11. 删除活动历史
-        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-        await db.execute(sql, [instanceId])
-        
-        // 12. 更新目标历史任务
-        sql = `
-            UPDATE ACT_HI_TASKINST 
-            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
-            WHERE ID_ = ?
-        `
-        await db.execute(sql, [targetTaskId])
-        
-        // 13. 更新历史流程实例
-        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
-        await db.execute(sql, [instanceId])
     } else {
         // 瀚高/PostgreSQL 版本
-        sql = `
-            INSERT INTO ACT_RU_EXECUTION (
-                ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
-                PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
-                START_TIME_, START_USER_ID_
-            ) VALUES ($1, 1, $2, $3, $4, 1, 1, $5, $6)
-        `
-        await db.query(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
-        
-        // 查询身份关联（候选人）
-        sql = `
-            SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-            FROM ACT_HI_IDENTITYLINK
-            WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
-        `
-        const identityResult = await query(db, dbType, sql, [targetTaskId])
-        
-        // 确定任务审批人：如果没有候选人，使用历史任务的审批人
-        let taskAssignee = null
-        if (identityResult.length === 0) {
-            taskAssignee = taskData.taskAssignee
-        }
-        
-        // 创建任务，使用原来的任务ID
-        sql = `
-            INSERT INTO ACT_RU_TASK (
-                ID_, REV_, NAME_, PRIORITY_, 
-                CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-            ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
-        `
-        await db.query(sql, [
-            targetTaskId, 
-            taskData.taskName, 
-            taskData.priority || 50, 
-            taskData.taskCreateTime, 
-            taskAssignee,
-            instanceId, 
-            instanceId, 
-            taskData.procDefId, 
-            taskData.taskDefKey
-        ])
-        
-        // 恢复身份关联（仅当有候选人时）
-        for (const link of identityResult) {
-            const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            sql = `
-                INSERT INTO ACT_RU_IDENTITYLINK (
-                    ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6)
-            `
-            await db.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
-        }
-        
-        sql = `
-            SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as double, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
-            FROM ACT_HI_VARINST 
-            WHERE PROC_INST_ID_ = $1 
-              AND NAME_ IS NOT NULL
-        `
-        const varResult = await query(db, dbType, sql, [instanceId])
-        
-        for (const v of varResult) {
-            const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-            const varType = v.varType || 'string'
+        const client = await db.connect()
+        try {
+            await client.query('BEGIN')
             
             sql = `
-                INSERT INTO ACT_RU_VARIABLE (
-                    ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                    TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                INSERT INTO ACT_RU_EXECUTION (
+                    ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                    PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
+                    START_TIME_, START_USER_ID_
+                ) VALUES ($1, 1, $2, $3, $4, 1, 1, $5, $6)
             `
-            await db.query(sql, [
-                varId, 
-                v.name, 
-                varType, 
+            await client.query(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
+            
+            // 查询身份关联（候选人）
+            sql = `
+                SELECT TYPE_ as type, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                FROM ACT_HI_IDENTITYLINK
+                WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
+            `
+            const identityResult = await client.query(sql, [targetTaskId])
+            const identityLinks = identityResult.rows
+            
+            // 确定任务审批人：如果没有候选人，使用历史任务的审批人
+            let taskAssignee = null
+            if (identityLinks.length === 0) {
+                taskAssignee = taskData.taskAssignee
+            }
+            
+            // 创建任务，使用原来的任务ID
+            sql = `
+                INSERT INTO ACT_RU_TASK (
+                    ID_, REV_, NAME_, PRIORITY_, 
+                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+            `
+            await client.query(sql, [
+                targetTaskId, 
+                taskData.taskName, 
+                taskData.priority || 50, 
+                taskData.taskCreateTime, 
+                taskAssignee,
                 instanceId, 
-                v.text, 
-                v.text2, 
-                v.double, 
-                v.long, 
-                v.bytearrayId
+                instanceId, 
+                taskData.procDefId, 
+                taskData.taskDefKey
             ])
-        }
-        
-        // 删除目标任务之后的历史
-        if (taskIdsToDelete.length > 0) {
-            const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-            await db.query(sql, taskIdsToDelete)
             
-            sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-            await db.query(sql, taskIdsToDelete)
+            // 恢复身份关联（仅当有候选人时）
+            for (const link of identityLinks) {
+                const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                sql = `
+                    INSERT INTO ACT_RU_IDENTITYLINK (
+                        ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, $5, $6)
+                `
+                await client.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+            }
+            
+            sql = `
+                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as text, TEXT2_ as text2, DOUBLE_ as `double`, LONG_ as long, BYTEARRAY_ID_ as bytearrayId
+                FROM ACT_HI_VARINST
+                WHERE PROC_INST_ID_ = $1
+                  AND NAME_ IS NOT NULL
+            `
+            const varResult = await client.query(sql, [instanceId])
+            const varRows = varResult.rows
+            
+            for (const v of varRows) {
+                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
+                const varType = v.varType || 'string'
+                
+                sql = `
+                    INSERT INTO ACT_RU_VARIABLE (
+                        ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
+                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                `
+                await client.query(sql, [
+                    varId, 
+                    v.name, 
+                    varType, 
+                    instanceId, 
+                    v.text, 
+                    v.text2, 
+                    v.double, 
+                    v.long, 
+                    v.bytearrayId
+                ])
+            }
+            
+            // 删除目标任务之后的历史
+            if (taskIdsToDelete.length > 0) {
+                const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
+                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(sql, taskIdsToDelete)
+                
+                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await client.query(sql, taskIdsToDelete)
+            }
+            
+            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
+            await client.query(sql, [instanceId])
+            
+            sql = `
+                UPDATE ACT_HI_TASKINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE ID_ = $1
+            `
+            await client.query(sql, [targetTaskId])
+            
+            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+            await client.query(sql, [instanceId])
+            
+            await client.query('COMMIT')
+        } catch (error) {
+            await client.query('ROLLBACK')
+            throw error
+        } finally {
+            client.release()
         }
-        
-        sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-        await db.query(sql, [instanceId])
-        
-        sql = `
-            UPDATE ACT_HI_TASKINST 
-            SET END_TIME_ = NULL, DELETE_REASON_ = NULL
-            WHERE ID_ = $1
-        `
-        await db.query(sql, [targetTaskId])
-        
-        sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
-        await db.query(sql, [instanceId])
     }
 }
 
