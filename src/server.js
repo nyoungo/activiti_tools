@@ -1187,9 +1187,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         sql = `
             INSERT INTO ACT_RU_EXECUTION (
                 ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
-                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
-            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
+            ) VALUES (?, 1, ?, NULL, NULL, ?, NOW(), 1, 1, 1)
         `
         await db.execute(sql, [instanceId, instanceId, procDefId])
         
@@ -1210,9 +1209,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         sql = `
             INSERT INTO ACT_RU_EXECUTION (
                 ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_,
-                START_TIME_, START_ACT_ID_, END_ACT_ID_, START_USER_ID_,
-                IS_ACTIVE_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_
-            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), NULL, NULL, NULL, 1, 1, 0, 1)
+                START_TIME_, IS_ACTIVE_, IS_SCOPE_, IS_MI_ROOT_
+            ) VALUES ($1, 1, $2, NULL, NULL, $3, NOW(), 1, 1, 1)
         `
         await db.query(sql, [instanceId, instanceId, procDefId])
         
