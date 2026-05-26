@@ -505,12 +505,12 @@ function toCamelCase(str) {
 function convertToCamelCase(obj) {
     if (Array.isArray(obj)) {
         return obj.map(item => convertToCamelCase(item))
-    } else if (obj && typeof obj === 'object') {
+    } else if (obj && typeof obj === 'object' && !(obj instanceof Date) && !(obj instanceof Buffer) && !(obj instanceof Uint8Array)) {
         const result = {}
         for (const key in obj) {
             const camelKey = toCamelCase(key)
             let value = obj[key]
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
+            if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date) && !(value instanceof Buffer) && !(value instanceof Uint8Array)) {
                 value = convertToCamelCase(value)
             }
             result[camelKey] = value
@@ -928,8 +928,11 @@ async function getProcessDefinitionXml(db, dbType, definitionId) {
     
     const rows = await query(db, dbType, sql, [definitionId])
     
+    console.log('[DEBUG] XML rows:', JSON.stringify(rows[0]))
     if (rows.length > 0) {
         const bytes = rows[0].bytes
+        console.log('[DEBUG] bytes type:', typeof bytes, bytes instanceof Buffer, bytes instanceof Uint8Array)
+        console.log('[DEBUG] bytes:', bytes)
         if (Buffer.isBuffer(bytes)) {
             return bytes.toString('utf8')
         } else if (bytes instanceof Uint8Array) {
