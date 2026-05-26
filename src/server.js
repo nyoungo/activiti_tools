@@ -505,12 +505,12 @@ function toCamelCase(str) {
 function convertToCamelCase(obj) {
     if (Array.isArray(obj)) {
         return obj.map(item => convertToCamelCase(item))
-    } else if (obj && typeof obj === 'object') {
+    } else if (obj && typeof obj === 'object' && !(obj instanceof Date)) {
         const result = {}
         for (const key in obj) {
             const camelKey = toCamelCase(key)
             let value = obj[key]
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
+            if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
                 value = convertToCamelCase(value)
             }
             result[camelKey] = value
