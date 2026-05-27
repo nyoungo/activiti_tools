@@ -176,7 +176,7 @@ app.post('/api/test-basic-connection', async (req, res) => {
                 port: config.port,
                 user: config.username,
                 password: config.password,
-                database: 'postgres'
+                database: config.dbType === 'hgdatabase' ? 'highgo' : 'postgres'
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
@@ -1426,11 +1426,20 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.START_TIME_ as taskCreateTime,
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
+            t.FORM_KEY_ as formKey,
+            t.PARENT_TASK_ID_ as parentTaskId,
+            t.DESCRIPTION_ as description,
+            t.OWNER_ as owner,
+            t.CATEGORY_ as category,
+            t.TENANT_ID_ as tenantId,
+            t.EXECUTION_ID_ as executionId,
+            a.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
             p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
+        LEFT JOIN ACT_HI_ACTINST a ON t.ID_ = a.TASK_ID_
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
@@ -1488,22 +1497,68 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
             await db.execute('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?', [instanceId])
             
-            // 4. 更新执行实例状态，保持开始时间和发起人
+            // 4. 更新或创建执行实例
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，需要创建两条执行实例
+            const isExecutionDifferent = taskData.executionId && taskData.executionId !== instanceId
+            
+            // 4.1 更新主执行实例状态（ID = instanceId）
             const updateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
-                    START_TIME_ = ?, START_USER_ID_ = ?
+                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_CONCURRENT_ = 0,
+                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?,
+                    PROC_DEF_ID_ = ?, BUSINESS_KEY_ = ?, TENANT_ID_ = ?
                 WHERE ID_ = ?
             `
-            await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
+            await db.execute(updateExecSql, [
+                taskData.startTime, taskData.startUserId, taskData.actId,
+                taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
+            ])
             
-            // 5. 查询身份关联（候选人）
-            const identitySql = `
+            // 4.2 如果 execution_id_ 和 proc_inst_id_ 不一致，创建子执行实例
+            if (isExecutionDifferent) {
+                const insertSubExecSql = `
+                    INSERT INTO ACT_RU_EXECUTION (
+                        ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                        PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_, IS_CONCURRENT_,
+                        START_TIME_, START_USER_ID_, ACT_ID_, PARENT_ID_, TENANT_ID_
+                    ) VALUES (?, 1, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?)
+                `
+                await db.execute(insertSubExecSql, [
+                    taskData.executionId,
+                    instanceId,
+                    taskData.businessKey,
+                    taskData.procDefId,
+                    taskData.taskCreateTime,
+                    taskData.startUserId,
+                    taskData.actId,
+                    instanceId,
+                    taskData.tenantId
+                ])
+            }
+            
+            // 5. 查询身份关联（候选人）- 先查运行时表，再查历史表
+            let identityLinks = []
+            
+            // 5.1 先从运行时身份关联表查询候选人
+            const ruIdentitySql = `
                 SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-                FROM ACT_HI_IDENTITYLINK
+                FROM ACT_RU_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
-            const [identityLinks] = await db.execute(identitySql, [targetTaskId])
+            const [ruIdentityLinks] = await db.execute(ruIdentitySql, [targetTaskId])
+            
+            // 5.2 如果运行时表没有，再从历史身份关联表查询
+            if (ruIdentityLinks.length === 0) {
+                const hiIdentitySql = `
+                    SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                    FROM ACT_HI_IDENTITYLINK
+                    WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
+                `
+                const [hiIdentityLinks] = await db.execute(hiIdentitySql, [targetTaskId])
+                identityLinks = hiIdentityLinks
+            } else {
+                identityLinks = ruIdentityLinks
+            }
             
             // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
@@ -1511,24 +1566,33 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 7. 创建任务，使用原来的任务ID
+            // 7. 创建任务，使用原来的任务ID和原来的execution_id_
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             `
+            // 使用原来的execution_id_，如果不存在则使用instanceId
+            const taskExecutionId = taskData.executionId || instanceId
             await db.execute(insertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskExecutionId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 8. 恢复身份关联（仅当有候选人时）
@@ -1542,9 +1606,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            // 9. 恢复变量
+            // 9. 恢复变量 - 从 ACT_HI_VARINST 完整恢复所有字段
             const selectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, 
+                    DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1552,20 +1618,22 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
                 await db.execute(insertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -1577,25 +1645,37 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 10. 删除目标任务之后的历史活动
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
+                
+                // 10.2 删除历史身份关联（包括candidate类型）
+                await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
+                
+                // 10.3 删除历史活动（只删除目标任务之后的，保留目标任务的）
                 const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await db.execute(delActInstSql, taskIdsToDelete)
                 
-                // 11. 删除目标任务之后的历史任务
+                // 10.4 删除目标任务之后的历史任务
                 const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await db.execute(delTaskInstSql, taskIdsToDelete)
             }
             
-            // 12. 删除活动历史
-            const delAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-            await db.execute(delAllActInstSql, [instanceId])
+            // 10.1 删除历史评论（包括目标任务和之后的任务）
+            await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
             
-            // 13. 更新目标历史任务
+            // 11. 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = ?
             `
             await db.execute(updateTaskSql, [targetTaskId])
+            
+            // 12. 更新目标历史活动，清除结束时间，保持原来的execution_id_
+            const updateActInstSql = `
+                UPDATE ACT_HI_ACTINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE TASK_ID_ = ?
+            `
+            await db.execute(updateActInstSql, [targetTaskId])
             
             // 14. 更新历史流程实例
             const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
@@ -1619,22 +1699,68 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await client.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
             await client.query('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1', [instanceId])
             
+            // 更新或创建执行实例
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，需要创建两条执行实例
+            const isExecutionDifferent = taskData.executionId && taskData.executionId !== instanceId
+            
+            // 更新主执行实例状态（ID = instanceId）
             const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = true, IS_SCOPE_ = true,
-                    START_TIME_ = $1, START_USER_ID_ = $2
-                WHERE ID_ = $3
+                SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false,
+                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3,
+                    PROC_DEF_ID_ = $4, BUSINESS_KEY_ = $5, TENANT_ID_ = $6
+                WHERE ID_ = $7
             `
-            await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
+            await client.query(pgUpdateExecSql, [
+                taskData.startTime, taskData.startUserId, taskData.actId,
+                taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
+            ])
             
-            // 查询身份关联（候选人）
-            const pgIdentitySql = `
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，创建子执行实例
+            if (isExecutionDifferent) {
+                const pgInsertSubExecSql = `
+                    INSERT INTO ACT_RU_EXECUTION (
+                        ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                        PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_, IS_CONCURRENT_,
+                        START_TIME_, START_USER_ID_, ACT_ID_, PARENT_ID_, TENANT_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, true, false, false, $5, $6, $7, $8, $9)
+                `
+                await client.query(pgInsertSubExecSql, [
+                    taskData.executionId,
+                    instanceId,
+                    taskData.businessKey,
+                    taskData.procDefId,
+                    taskData.taskCreateTime,
+                    taskData.startUserId,
+                    taskData.actId,
+                    instanceId,
+                    taskData.tenantId
+                ])
+            }
+            
+            // 查询身份关联（候选人）- 先查运行时表，再查历史表
+            let identityLinks = []
+            
+            // 先从运行时身份关联表查询候选人
+            const pgRuIdentitySql = `
                 SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-                FROM ACT_HI_IDENTITYLINK
+                FROM ACT_RU_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
-            const identityResult = await client.query(pgIdentitySql, [targetTaskId])
-            const identityLinks = identityResult.rows
+            const ruIdentityResult = await client.query(pgRuIdentitySql, [targetTaskId])
+            
+            // 如果运行时表没有，再从历史身份关联表查询
+            if (ruIdentityResult.rows.length === 0) {
+                const pgHiIdentitySql = `
+                    SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                    FROM ACT_HI_IDENTITYLINK
+                    WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
+                `
+                const hiIdentityResult = await client.query(pgHiIdentitySql, [targetTaskId])
+                identityLinks = hiIdentityResult.rows
+            } else {
+                identityLinks = ruIdentityResult.rows
+            }
             
             // 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
@@ -1642,24 +1768,33 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 创建任务，使用原来的任务ID
+            // 创建任务，使用原来的任务ID和原来的execution_id_
             const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
             `
+            // 使用原来的execution_id_，如果不存在则使用instanceId
+            const pgTaskExecutionId = taskData.executionId || instanceId
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                pgTaskExecutionId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 恢复身份关联（仅当有候选人时）
@@ -1674,7 +1809,9 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             const pgSelectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, 
+                    DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -1683,20 +1820,22 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const varRows = varResult.rows
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `
                 await client.query(pgInsertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -1705,25 +1844,41 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 ])
             }
             
-            // 删除目标任务之后的历史
+            // 9. 删除目标任务之后的历史
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
+                
+                // 9.2 删除历史身份关联（包括candidate类型）
+                const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(pgDelIdentitySql, taskIdsToDelete)
+                
+                // 9.3 删除历史活动（只删除目标任务之后的，保留目标任务的）
                 const pgDelActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelActInstSql, taskIdsToDelete)
                 
+                // 9.4 删除目标任务之后的历史任务
                 const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
             
-            const pgDelAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-            await client.query(pgDelAllActInstSql, [instanceId])
+            // 9.1 删除历史评论（包括目标任务和之后的任务）
+            await client.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
             
+            // 10. 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = $1
             `
             await client.query(pgUpdateTaskSql, [targetTaskId])
+            
+            // 11. 更新目标历史活动，清除结束时间，保持原来的execution_id_
+            const pgUpdateActInstSql = `
+                UPDATE ACT_HI_ACTINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE TASK_ID_ = $1
+            `
+            await client.query(pgUpdateActInstSql, [targetTaskId])
             
             const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
             await client.query(pgUpdateProcInstSql, [instanceId])
@@ -1749,11 +1904,20 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.START_TIME_ as taskCreateTime,
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
+            t.FORM_KEY_ as formKey,
+            t.PARENT_TASK_ID_ as parentTaskId,
+            t.DESCRIPTION_ as description,
+            t.OWNER_ as owner,
+            t.CATEGORY_ as category,
+            t.TENANT_ID_ as tenantId,
+            t.EXECUTION_ID_ as executionId,
+            a.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
             p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
+        LEFT JOIN ACT_HI_ACTINST a ON t.ID_ = a.TASK_ID_
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
@@ -1805,15 +1969,41 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         // 开启事务
         await db.beginTransaction()
         try {
-            // 3. 恢复执行实例，使用从历史表获得的所有信息
+            // 3. 创建执行实例，使用从历史表获得的所有信息
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，需要创建两条执行实例
+            const isExecutionDifferent = taskData.executionId && taskData.executionId !== instanceId
+            
+            // 3.1 创建主执行实例（ID = instanceId）
             const insertExecSql = `
                 INSERT INTO ACT_RU_EXECUTION (
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
                     PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
-                    START_TIME_, START_USER_ID_
-                ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?)
+                    START_TIME_, START_USER_ID_, ACT_ID_
+                ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?, ?)
             `
-            await db.execute(insertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
+            await db.execute(insertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId, taskData.actId])
+            
+            // 3.2 如果 execution_id_ 和 proc_inst_id_ 不一致，创建子执行实例
+            if (isExecutionDifferent) {
+                const insertSubExecSql = `
+                    INSERT INTO ACT_RU_EXECUTION (
+                        ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                        PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_, IS_CONCURRENT_,
+                        START_TIME_, START_USER_ID_, ACT_ID_, PARENT_ID_, TENANT_ID_
+                    ) VALUES (?, 1, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?)
+                `
+                await db.execute(insertSubExecSql, [
+                    taskData.executionId,
+                    instanceId,
+                    taskData.businessKey,
+                    taskData.procDefId,
+                    taskData.taskCreateTime,
+                    taskData.startUserId,
+                    taskData.actId,
+                    instanceId,
+                    taskData.tenantId
+                ])
+            }
             
             // 4. 查询身份关联（候选人）
             const identitySql = `
@@ -1829,24 +2019,33 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 6. 创建任务，使用原来的任务ID
+            // 6. 创建任务，使用原来的任务ID和原来的execution_id_
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             `
+            // 使用原来的execution_id_，如果不存在则使用instanceId
+            const taskExecutionId = taskData.executionId || instanceId
             await db.execute(insertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskExecutionId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 7. 恢复身份关联（仅当有候选人时）
@@ -1860,9 +2059,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            // 8. 恢复变量
+            // 8. 恢复变量 - 从 ACT_HI_VARINST 完整恢复所有字段
             const selectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, 
+                    DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1870,20 +2071,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
                 await db.execute(insertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -1895,25 +2098,37 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 9. 删除目标任务之后的历史活动
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
+                
+                // 9.2 删除历史身份关联（包括candidate类型）
+                await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
+                
+                // 9.3 删除历史活动（只删除目标任务之后的，保留目标任务的）
                 const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await db.execute(delActInstSql, taskIdsToDelete)
                 
-                // 10. 删除目标任务之后的历史任务
+                // 9.4 删除目标任务之后的历史任务
                 const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await db.execute(delTaskInstSql, taskIdsToDelete)
             }
             
-            // 11. 删除活动历史
-            const delAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-            await db.execute(delAllActInstSql, [instanceId])
+            // 9.1 删除历史评论（包括目标任务和之后的任务）
+            await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
             
-            // 12. 更新目标历史任务
+            // 10. 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = ?
             `
             await db.execute(updateTaskSql, [targetTaskId])
+            
+            // 11. 更新目标历史活动，清除结束时间，保持原来的execution_id_
+            const updateActInstSql = `
+                UPDATE ACT_HI_ACTINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE TASK_ID_ = ?
+            `
+            await db.execute(updateActInstSql, [targetTaskId])
             
             // 13. 更新历史流程实例
             const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
@@ -1932,14 +2147,40 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         try {
             await client.query('BEGIN')
             
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，需要创建两条执行实例
+            const isExecutionDifferent = taskData.executionId && taskData.executionId !== instanceId
+            
+            // 创建主执行实例（ID = instanceId）
             const pgInsertExecSql = `
                 INSERT INTO ACT_RU_EXECUTION (
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
                     PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
-                    START_TIME_, START_USER_ID_
-                ) VALUES ($1, 1, $2, $3, $4, true, true, $5, $6)
+                    START_TIME_, START_USER_ID_, ACT_ID_
+                ) VALUES ($1, 1, $2, $3, $4, true, true, $5, $6, $7)
             `
-            await client.query(pgInsertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
+            await client.query(pgInsertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId, taskData.actId])
+            
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，创建子执行实例
+            if (isExecutionDifferent) {
+                const pgInsertSubExecSql = `
+                    INSERT INTO ACT_RU_EXECUTION (
+                        ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                        PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_, IS_CONCURRENT_,
+                        START_TIME_, START_USER_ID_, ACT_ID_, PARENT_ID_, TENANT_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, true, false, false, $5, $6, $7, $8, $9)
+                `
+                await client.query(pgInsertSubExecSql, [
+                    taskData.executionId,
+                    instanceId,
+                    taskData.businessKey,
+                    taskData.procDefId,
+                    taskData.taskCreateTime,
+                    taskData.startUserId,
+                    taskData.actId,
+                    instanceId,
+                    taskData.tenantId
+                ])
+            }
             
             // 查询身份关联（候选人）
             const pgIdentitySql = `
@@ -1956,24 +2197,33 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 创建任务，使用原来的任务ID
+            // 创建任务，使用原来的任务ID和原来的execution_id_
             const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
             `
+            // 使用原来的execution_id_，如果不存在则使用instanceId
+            const pgTaskExecutionId = taskData.executionId || instanceId
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                pgTaskExecutionId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 恢复身份关联（仅当有候选人时）
@@ -1988,7 +2238,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             const pgSelectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, 
+                    DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -1997,20 +2249,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             const varRows = varResult.rows
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `
                 await client.query(pgInsertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -2022,22 +2276,38 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 删除目标任务之后的历史
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
+                
+                // 删除历史身份关联（包括candidate类型）
+                const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(pgDelIdentitySql, taskIdsToDelete)
+                
+                // 删除历史活动（只删除目标任务之后的，保留目标任务的）
                 const pgDelActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelActInstSql, taskIdsToDelete)
                 
+                // 删除目标任务之后的历史任务
                 const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
             
-            const pgDelAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-            await client.query(pgDelAllActInstSql, [instanceId])
+            // 删除历史评论（包括目标任务和之后的任务）
+            await client.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
             
+            // 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = $1
             `
             await client.query(pgUpdateTaskSql, [targetTaskId])
+            
+            // 更新目标历史活动，清除结束时间，保持原来的execution_id_
+            const pgUpdateActInstSql = `
+                UPDATE ACT_HI_ACTINST 
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                WHERE TASK_ID_ = $1
+            `
+            await client.query(pgUpdateActInstSql, [targetTaskId])
             
             const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
             await client.query(pgUpdateProcInstSql, [instanceId])

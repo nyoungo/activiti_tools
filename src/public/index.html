@@ -19,10 +19,12 @@
                     <div class="connection-form">
                         <div class="form-group">
                             <label>已保存的配置</label>
-                            <select id="savedConnections">
-                                <option value="">-- 选择配置 --</option>
-                            </select>
-                            <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none;">删除</button>
+                            <div style="display: flex; gap: 12px; align-items: center;">
+                                <select id="savedConnections" style="flex: 1;">
+                                    <option value="">-- 选择配置 --</option>
+                                </select>
+                                <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none; flex-shrink: 0;">删除</button>
+                            </div>
                         </div>
                         <div class="form-row">
                             <div class="form-group">
@@ -183,7 +185,7 @@
                             <option value="candidate">候选人</option>
                             <option value="assignee">审批人</option>
                         </select>
-                        <button class="btn btn-small btn-secondary" onclick="addCandidate()" style="flex: 1;">添加</button>
+                        <button class="btn btn-small btn-secondary" onclick="addCandidate()">添加</button>
                         <button class="btn btn-small btn-secondary" onclick="refreshTaskInfo()">刷新</button>
                     </div>
                     <small>添加多审批人（IdentityLink）</small>

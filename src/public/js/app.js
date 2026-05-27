@@ -136,11 +136,7 @@ function bindEvents() {
             if (modal) modal.classList.remove('show')
         })
     })
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.classList.remove('show')
-        })
-    })
+
 
     // 标签页切换
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -583,7 +579,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 </select>
                             </td>
                             <td>
-                                <input type="text" value="${v.value || ''}" id="var-${v.name}" ${isByteArray ? 'readonly' : ''}>
+                                <textarea id="var-${v.name}" rows="1" style="resize: vertical; min-height: 36px;" ${isByteArray ? 'readonly' : ''}>${formatVariableValue(v.value)}</textarea>
                             </td>
                             <td>
                                 <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')" ${isByteArray ? 'disabled' : ''}>保存</button>
@@ -658,6 +654,20 @@ async function addVariable() {
     showInstanceDetail(state.currentInstanceId)
 }
 
+// 格式化变量值用于显示
+function formatVariableValue(value) {
+    if (value === null || value === undefined) {
+        return ''
+    }
+    if (typeof value === 'object') {
+        return JSON.stringify(value, null, 2)
+    }
+    if (typeof value === 'string') {
+        return value.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&/g, '&amp;')
+    }
+    return String(value)
+}
+
 // 更新变量类型
 function updateVariableType(name, type) {
     // 这里只是更新本地UI，实际保存时再提交
@@ -666,7 +676,10 @@ function updateVariableType(name, type) {
 // 保存变量
 async function saveVariable(name) {
     const type = document.querySelector(`#variableTableBody tr[data-name="${name}"] select`).value
-    const value = document.getElementById(`var-${name}`).value
+    let value = document.getElementById(`var-${name}`).value
+    
+    // 反转义 HTML 实体，确保保存原始值
+    value = value.replace(/&quot;/g, '"').replace(/\\n/g, '\n')
 
     await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
     alert('变量保存成功')
