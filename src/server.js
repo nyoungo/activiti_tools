@@ -1577,22 +1577,30 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 10. 删除目标任务之后的历史活动
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
+                
+                // 10.1 删除历史评论
+                await db.execute(`DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
+                
+                // 10.2 删除历史身份关联（保留candidate类型）
+                await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders}) AND TYPE_ != 'candidate'`, taskIdsToDelete)
+                
+                // 10.3 删除历史活动
                 const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await db.execute(delActInstSql, taskIdsToDelete)
                 
-                // 11. 删除目标任务之后的历史任务
+                // 10.4 删除目标任务之后的历史任务
                 const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await db.execute(delTaskInstSql, taskIdsToDelete)
             }
             
-            // 12. 删除活动历史
+            // 11. 删除活动历史
             const delAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
             await db.execute(delAllActInstSql, [instanceId])
             
-            // 13. 更新目标历史任务
+            // 12. 更新目标历史任务，清除结束时间和审批人
             const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = ?
             `
             await db.execute(updateTaskSql, [targetTaskId])
@@ -1705,12 +1713,23 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 ])
             }
             
-            // 删除目标任务之后的历史
+            // 9. 删除目标任务之后的历史
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
+                
+                // 9.1 删除历史评论
+                const pgDelCommentSql = `DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(pgDelCommentSql, taskIdsToDelete)
+                
+                // 9.2 删除历史身份关联（保留candidate类型）
+                const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders}) AND TYPE_ != 'candidate'`
+                await client.query(pgDelIdentitySql, taskIdsToDelete)
+                
+                // 9.3 删除历史活动
                 const pgDelActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelActInstSql, taskIdsToDelete)
                 
+                // 9.4 删除目标任务之后的历史任务
                 const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
@@ -1718,9 +1737,10 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const pgDelAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
             await client.query(pgDelAllActInstSql, [instanceId])
             
+            // 10. 更新目标历史任务，清除结束时间和审批人
             const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = $1
             `
             await client.query(pgUpdateTaskSql, [targetTaskId])
