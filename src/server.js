@@ -1499,11 +1499,15 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 4. 更新执行实例状态，保持开始时间和发起人，设置当前活动ID
             const updateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_CONCURRENT_ = 0,
-                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?
+                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_CONCURRENT_ = 0, IS_EVENT_SCOPE_ = 0, IS_MULTI_INSTANCE_ROOT_ = 0,
+                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?, ACT_INST_ID_ = ?,
+                    PROC_DEF_ID_ = ?, BUSSINESS_KEY_ = ?, TENANT_ID_ = ?
                 WHERE ID_ = ?
             `
-            await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, taskData.actId, instanceId])
+            await db.execute(updateExecSql, [
+                taskData.startTime, taskData.startUserId, taskData.actId, taskData.taskId,
+                taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
+            ])
             
             // 5. 查询身份关联（候选人）- 先查运行时表，再查历史表
             let identityLinks = []
@@ -1660,11 +1664,15 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false,
-                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3
-                WHERE ID_ = $4
+                SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false, IS_EVENT_SCOPE_ = false, IS_MULTI_INSTANCE_ROOT_ = false,
+                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3, ACT_INST_ID_ = $4,
+                    PROC_DEF_ID_ = $5, BUSSINESS_KEY_ = $6, TENANT_ID_ = $7
+                WHERE ID_ = $8
             `
-            await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, taskData.actId, instanceId])
+            await client.query(pgUpdateExecSql, [
+                taskData.startTime, taskData.startUserId, taskData.actId, taskData.taskId,
+                taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
+            ])
             
             // 查询身份关联（候选人）
             // 查询身份关联（候选人）- 先查运行时表，再查历史表
