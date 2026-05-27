@@ -1433,12 +1433,13 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.CATEGORY_ as category,
             t.TENANT_ID_ as tenantId,
             t.EXECUTION_ID_ as executionId,
-            t.ACT_ID_ as actId,
+            a.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
             p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
+        LEFT JOIN ACT_HI_ACTINST a ON t.ID_ = a.TASK_ID_
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
@@ -1838,12 +1839,13 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.CATEGORY_ as category,
             t.TENANT_ID_ as tenantId,
             t.EXECUTION_ID_ as executionId,
-            t.ACT_ID_ as actId,
+            a.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
             p.START_USER_ID_ as startUserId
         FROM ACT_HI_TASKINST t
+        LEFT JOIN ACT_HI_ACTINST a ON t.ID_ = a.TASK_ID_
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
