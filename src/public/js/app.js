@@ -246,6 +246,7 @@ async function loadConnectionById(id) {
                         elements.connSchema.innerHTML += `<option value="${schema}" ${schema === config.schema ? 'selected' : ''}>${schema}</option>`
                     })
                     elements.connSchema.disabled = false
+                    document.getElementById('schemaGroup').style.display = 'block'
                 }
                 
                 // 显示连接按钮
@@ -365,6 +366,7 @@ async function onDatabaseSelect() {
             elements.connSchema.innerHTML += `<option value="${schema}">${schema}</option>`
         })
         elements.connSchema.disabled = false
+        document.getElementById('schemaGroup').style.display = 'block'
         showMessage(elements.connectionMessage, '请选择模式', 'success')
     } else {
         showMessage(elements.connectionMessage, result.message, 'error')
