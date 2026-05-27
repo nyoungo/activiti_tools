@@ -1501,12 +1501,12 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const updateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
                 SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_CONCURRENT_ = 0,
-                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?, ACT_INST_ID_ = ?,
+                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?,
                     PROC_DEF_ID_ = ?, BUSINESS_KEY_ = ?, TENANT_ID_ = ?
                 WHERE ID_ = ?
             `
             await db.execute(updateExecSql, [
-                taskData.startTime, taskData.startUserId, taskData.actId, taskData.taskId,
+                taskData.startTime, taskData.startUserId, taskData.actId,
                 taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
             ])
             
@@ -1666,12 +1666,12 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
                 SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false,
-                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3, ACT_INST_ID_ = $4,
-                    PROC_DEF_ID_ = $5, BUSSINESS_KEY_ = $6, TENANT_ID_ = $7
-                WHERE ID_ = $8
+                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3,
+                    PROC_DEF_ID_ = $4, BUSSINESS_KEY_ = $5, TENANT_ID_ = $6
+                WHERE ID_ = $7
             `
             await client.query(pgUpdateExecSql, [
-                taskData.startTime, taskData.startUserId, taskData.actId, taskData.taskId,
+                taskData.startTime, taskData.startUserId, taskData.actId,
                 taskData.procDefId, taskData.businessKey, taskData.tenantId, instanceId
             ])
             
