@@ -1433,6 +1433,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.CATEGORY_ as category,
             t.TENANT_ID_ as tenantId,
             t.EXECUTION_ID_ as executionId,
+            t.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
@@ -1495,14 +1496,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await db.execute('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = ? AND PARENT_ID_ IS NOT NULL', [instanceId])
             await db.execute('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?', [instanceId])
             
-            // 4. 更新执行实例状态，保持开始时间和发起人
+            // 4. 更新执行实例状态，保持开始时间和发起人，设置当前活动ID
             const updateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
-                    START_TIME_ = ?, START_USER_ID_ = ?
+                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1, IS_CONCURRENT_ = 0,
+                    START_TIME_ = ?, START_USER_ID_ = ?, ACT_ID_ = ?
                 WHERE ID_ = ?
             `
-            await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
+            await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, taskData.actId, instanceId])
             
             // 5. 查询身份关联（候选人）- 先查运行时表，再查历史表
             let identityLinks = []
@@ -1659,11 +1660,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = true, IS_SCOPE_ = true,
-                    START_TIME_ = $1, START_USER_ID_ = $2
-                WHERE ID_ = $3
+                SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false,
+                    START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3
+                WHERE ID_ = $4
             `
-            await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
+            await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, taskData.actId, instanceId])
             
             // 查询身份关联（候选人）
             // 查询身份关联（候选人）- 先查运行时表，再查历史表
@@ -1829,6 +1830,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.CATEGORY_ as category,
             t.TENANT_ID_ as tenantId,
             t.EXECUTION_ID_ as executionId,
+            t.ACT_ID_ as actId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
