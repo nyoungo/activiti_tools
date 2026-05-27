@@ -853,13 +853,13 @@ async function getProcessVariables(db, dbType, instanceId) {
     let sql
     if (dbType === 'mysql') {
         sql = `
-            SELECT NAME_ as name, TYPE_ as \`type\`, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`
+            SELECT NAME_ as name, TYPE_ as \`type\`, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = ?
         `
     } else {
         sql = `
-            SELECT NAME_ as name, TYPE_ as "type", TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long"
+            SELECT NAME_ as name, TYPE_ as "type", TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = $1
         `
@@ -870,10 +870,22 @@ async function getProcessVariables(db, dbType, instanceId) {
     return rows.map(v => {
         let value
         switch (v.type) {
-            case 'string': value = v.textValue; break
-            case 'long': value = v.long; break
-            case 'double': value = v.double; break
-            default: value = v.textValue
+            case 'string': 
+                value = v.textValue; 
+                break
+            case 'long': 
+                value = v.long; 
+                break
+            case 'double': 
+                value = v.double; 
+                break
+            case 'boolean':
+                // boolean 通常也存储在 text_ 字段或 long_ 字段
+                value = v.textValue !== null ? v.textValue : (v.long !== null ? !!v.long : null);
+                break
+            default: 
+                // 对于其他类型（包括 bytearray）显示占位符
+                value = v.bytearrayId !== null ? '[byteArray]' : v.textValue;
         }
         return { name: v.name, type: v.type, value }
     })
@@ -882,115 +894,258 @@ async function getProcessVariables(db, dbType, instanceId) {
 async function setProcessVariable(db, dbType, instanceId, variable) {
     // 首先检查变量是否存在
     let checkSql, checkParams
+    
+    // 先查询现有变量的详细信息，包括类型
+    let selectSql, selectParams
     if (dbType === 'mysql') {
-        checkSql = 'SELECT ID_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-        checkParams = [instanceId, variable.name]
-        const [checkResult] = await db.execute(checkSql, checkParams)
-        const variableExists = checkResult.length > 0
+        selectSql = 'SELECT ID_, TYPE_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+        selectParams = [instanceId, variable.name]
+        const [selectResult] = await db.execute(selectSql, selectParams)
+        const variableExists = selectResult.length > 0
         
-        // 根据变量类型设置值
-        let textVal = null, doubleVal = null, longVal = null
+        // 如果是 bytearray 类型，不允许修改
+        if (variableExists && selectResult[0].TYPE_ && 
+            (selectResult[0].TYPE_.toLowerCase().includes('byte') || selectResult[0].TYPE_.toLowerCase() === 'serializable')) {
+            throw new Error('Bytearray 类型变量不允许修改')
+        }
+        
+        // 根据变量类型设置值，只设置对应字段
+        let setFields = [], setParams = []
+        setParams.push(variable.type) // 首先设置类型
+        
         switch (variable.type) {
             case 'string':
-                textVal = variable.value
+                setFields.push('TEXT_ = ?')
+                setParams.push(variable.value)
                 break
             case 'long':
-                longVal = parseInt(variable.value)
+                setFields.push('LONG_ = ?')
+                setParams.push(parseInt(variable.value))
                 break
             case 'double':
-                doubleVal = parseFloat(variable.value)
+                setFields.push('DOUBLE_ = ?')
+                setParams.push(parseFloat(variable.value))
+                break
+            case 'boolean':
+                setFields.push('TEXT_ = ?')
+                setParams.push(variable.value ? 'true' : 'false')
                 break
             default:
-                textVal = String(variable.value)
+                // 默认按字符串处理
+                setFields.push('TEXT_ = ?')
+                setParams.push(String(variable.value))
         }
+        
+        // 添加 WHERE 条件参数
+        setParams.push(instanceId)
+        setParams.push(variable.name)
         
         if (variableExists) {
             // 更新已存在的变量
-            const updateRuSql = `
-                UPDATE ACT_RU_VARIABLE 
-                SET TYPE_ = ?, TEXT_ = ?, DOUBLE_ = ?, LONG_ = ?
-                WHERE PROC_INST_ID_ = ? AND NAME_ = ?
-            `
-            const updateParams = [variable.type, textVal, doubleVal, longVal, instanceId, variable.name]
-            await db.execute(updateRuSql, updateParams)
+            const updateRuSql = `UPDATE ACT_RU_VARIABLE SET TYPE_ = ?, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ? AND NAME_ = ?`
+            await db.execute(updateRuSql, setParams)
             
-            const updateHiSql = `
-                UPDATE ACT_HI_VARINST 
-                SET VAR_TYPE_ = ?, TEXT_ = ?, DOUBLE_ = ?, LONG_ = ?
-                WHERE PROC_INST_ID_ = ? AND NAME_ = ?
-            `
-            await db.execute(updateHiSql, updateParams)
+            const updateHiSql = `UPDATE ACT_HI_VARINST SET VAR_TYPE_ = ?, ${setFields.join(', ').replace(/TEXT_/g, 'TEXT_').replace(/DOUBLE_/g, 'DOUBLE_').replace(/LONG_/g, 'LONG_')} WHERE PROC_INST_ID_ = ? AND NAME_ = ?`
+            await db.execute(updateHiSql, setParams)
         } else {
             // 插入新变量
-            const insertRuSql = `
-                INSERT INTO ACT_RU_VARIABLE (ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
-                VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?)
-            `
-            const ruParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            // 准备 insert 字段和值
+            let insertFields = ['ID_', 'REV_', 'NAME_', 'TYPE_', 'PROC_INST_ID_']
+            let insertValues = ['UUID()', '?', '?', '?', '?']
+            let insertParams = [variable.name, variable.type, instanceId]
             
-            const insertHiSql = `
-                INSERT INTO ACT_HI_VARINST (ID_, NAME_, VAR_TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
-                VALUES (UUID(), ?, ?, ?, ?, ?, ?)
-            `
-            const hiParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            switch (variable.type) {
+                case 'string':
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(variable.value)
+                    break
+                case 'long':
+                    insertFields.push('LONG_')
+                    insertValues.push('?')
+                    insertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    insertFields.push('DOUBLE_')
+                    insertValues.push('?')
+                    insertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(String(variable.value))
+            }
             
-            await db.execute(insertRuSql, ruParams)
-            await db.execute(insertHiSql, hiParams)
+            const insertRuSql = `INSERT INTO ACT_RU_VARIABLE (${insertFields.join(', ')}) VALUES (${insertValues.join(', ')})`
+            await db.execute(insertRuSql, [''].concat(insertParams).slice(1)) // 跳过 UUID() 的占位符
+            
+            // 历史表插入
+            let hiInsertFields = ['ID_', 'NAME_', 'VAR_TYPE_', 'PROC_INST_ID_']
+            let hiInsertValues = ['UUID()', '?', '?', '?']
+            let hiInsertParams = [variable.name, variable.type, instanceId]
+            
+            switch (variable.type) {
+                case 'string':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(variable.value)
+                    break
+                case 'long':
+                    hiInsertFields.push('LONG_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    hiInsertFields.push('DOUBLE_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(String(variable.value))
+            }
+            
+            const insertHiSql = `INSERT INTO ACT_HI_VARINST (${hiInsertFields.join(', ')}) VALUES (${hiInsertValues.join(', ')})`
+            await db.execute(insertHiSql, [''].concat(hiInsertParams).slice(1)) // 跳过 UUID() 的占位符
         }
     } else {
-        checkSql = 'SELECT ID_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1 AND NAME_ = $2'
-        checkParams = [instanceId, variable.name]
-        const checkResult = await db.query(checkSql, checkParams)
-        const variableExists = checkResult.rows.length > 0
+        selectSql = 'SELECT ID_, TYPE_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1 AND NAME_ = $2'
+        selectParams = [instanceId, variable.name]
+        const selectResult = await db.query(selectSql, selectParams)
+        const variableExists = selectResult.rows.length > 0
         
-        // 根据变量类型设置值
-        let textVal = null, doubleVal = null, longVal = null
+        // 如果是 bytearray 类型，不允许修改
+        if (variableExists && selectResult.rows[0].TYPE_ && 
+            (selectResult.rows[0].TYPE_.toLowerCase().includes('byte') || selectResult.rows[0].TYPE_.toLowerCase() === 'serializable')) {
+            throw new Error('Bytearray 类型变量不允许修改')
+        }
+        
+        // 根据变量类型设置值，只设置对应字段
+        let setFields = [], setParams = []
+        let paramIndex = 1
+        setParams.push(variable.type) // 首先设置类型
+        paramIndex++
+        
         switch (variable.type) {
             case 'string':
-                textVal = variable.value
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(variable.value)
                 break
             case 'long':
-                longVal = parseInt(variable.value)
+                setFields.push(`LONG_ = $${paramIndex++}`)
+                setParams.push(parseInt(variable.value))
                 break
             case 'double':
-                doubleVal = parseFloat(variable.value)
+                setFields.push(`DOUBLE_ = $${paramIndex++}`)
+                setParams.push(parseFloat(variable.value))
+                break
+            case 'boolean':
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(variable.value ? 'true' : 'false')
                 break
             default:
-                textVal = String(variable.value)
+                // 默认按字符串处理
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(String(variable.value))
         }
+        
+        // 添加 WHERE 条件参数
+        const whereProcIdParam = `$${paramIndex++}`
+        const whereNameParam = `$${paramIndex++}`
+        setParams.push(instanceId)
+        setParams.push(variable.name)
         
         if (variableExists) {
             // 更新已存在的变量
-            const updateRuSql = `
-                UPDATE ACT_RU_VARIABLE 
-                SET TYPE_ = $1, TEXT_ = $2, DOUBLE_ = $3, LONG_ = $4
-                WHERE PROC_INST_ID_ = $5 AND NAME_ = $6
-            `
-            const updateParams = [variable.type, textVal, doubleVal, longVal, instanceId, variable.name]
-            await db.query(updateRuSql, updateParams)
+            const updateRuSql = `UPDATE ACT_RU_VARIABLE SET TYPE_ = $1, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ${whereProcIdParam} AND NAME_ = ${whereNameParam}`
+            await db.query(updateRuSql, setParams)
             
-            const updateHiSql = `
-                UPDATE ACT_HI_VARINST 
-                SET VAR_TYPE_ = $1, TEXT_ = $2, DOUBLE_ = $3, LONG_ = $4
-                WHERE PROC_INST_ID_ = $5 AND NAME_ = $6
-            `
-            await db.query(updateHiSql, updateParams)
+            const updateHiSql = `UPDATE ACT_HI_VARINST SET VAR_TYPE_ = $1, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ${whereProcIdParam} AND NAME_ = ${whereNameParam}`
+            await db.query(updateHiSql, setParams)
         } else {
             // 插入新变量
-            const insertRuSql = `
-                INSERT INTO ACT_RU_VARIABLE (ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
-                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-            `
-            const ruParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            // 准备 insert 字段和值
+            let insertFields = ['ID_', 'REV_', 'NAME_', 'TYPE_', 'PROC_INST_ID_']
+            let insertValues = ['gen_random_uuid()', '1', '$1', '$2', '$3']
+            let insertParams = [variable.name, variable.type, instanceId]
+            let insertParamIndex = 4
             
-            const insertHiSql = `
-                INSERT INTO ACT_HI_VARINST (ID_, NAME_, VAR_TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
-                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-            `
-            const hiParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            switch (variable.type) {
+                case 'string':
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(variable.value)
+                    break
+                case 'long':
+                    insertFields.push('LONG_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    insertFields.push('DOUBLE_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(String(variable.value))
+            }
             
-            await db.query(insertRuSql, ruParams)
-            await db.query(insertHiSql, hiParams)
+            const insertRuSql = `INSERT INTO ACT_RU_VARIABLE (${insertFields.join(', ')}) VALUES (${insertValues.join(', ')})`
+            await db.query(insertRuSql, insertParams)
+            
+            // 历史表插入
+            let hiInsertFields = ['ID_', 'NAME_', 'VAR_TYPE_', 'PROC_INST_ID_']
+            let hiInsertValues = ['gen_random_uuid()', '$1', '$2', '$3']
+            let hiInsertParams = [variable.name, variable.type, instanceId]
+            let hiInsertParamIndex = 4
+            
+            switch (variable.type) {
+                case 'string':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(variable.value)
+                    break
+                case 'long':
+                    hiInsertFields.push('LONG_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    hiInsertFields.push('DOUBLE_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(String(variable.value))
+            }
+            
+            const insertHiSql = `INSERT INTO ACT_HI_VARINST (${hiInsertFields.join(', ')}) VALUES (${hiInsertValues.join(', ')})`
+            await db.query(insertHiSql, hiInsertParams)
         }
     }
 }

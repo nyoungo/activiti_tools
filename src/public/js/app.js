@@ -421,23 +421,28 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                     <tr><th>变量名</th><th>类型</th><th>值</th><th>操作</th></tr>
                 </thead>
                 <tbody id="variableTableBody">
-                    ${variables.map(v => `
-                        <tr data-name="${v.name}">
+                    ${variables.map(v => {
+                        const isByteArray = v.value === '[byteArray]' || (v.type && (v.type.toLowerCase().includes('byte') || v.type.toLowerCase() === 'serializable'))
+                        return `
+                        <tr data-name="${v.name}" ${isByteArray ? 'class="variable-disabled"' : ''}>
                             <td><input type="text" value="${v.name}" readonly></td>
                             <td>
-                                <select onchange="updateVariableType('${v.name}', this.value)">
+                                <select onchange="updateVariableType('${v.name}', this.value)" ${isByteArray ? 'disabled' : ''}>
                                     <option value="string" ${v.type === 'string' ? 'selected' : ''}>String</option>
                                     <option value="long" ${v.type === 'long' ? 'selected' : ''}>Long</option>
                                     <option value="double" ${v.type === 'double' ? 'selected' : ''}>Double</option>
+                                    <option value="boolean" ${v.type === 'boolean' ? 'selected' : ''}>Boolean</option>
                                 </select>
                             </td>
-                            <td><input type="text" value="${v.value || ''}" id="var-${v.name}"></td>
                             <td>
-                                <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')">保存</button>
+                                <input type="text" value="${v.value || ''}" id="var-${v.name}" ${isByteArray ? 'readonly' : ''}>
+                            </td>
+                            <td>
+                                <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')" ${isByteArray ? 'disabled' : ''}>保存</button>
                                 <button class="btn btn-small btn-danger" onclick="deleteVariable('${v.name}')">删除</button>
                             </td>
                         </tr>
-                    `).join('')}
+                    `}).join('')}
                 </tbody>
             </table>
             <div class="add-variable">
@@ -446,6 +451,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                     <option value="string">String</option>
                     <option value="long">Long</option>
                     <option value="double">Double</option>
+                    <option value="boolean">Boolean</option>
                 </select>
                 <input type="text" id="newVarValue" placeholder="变量值">
                 <button class="btn btn-primary" onclick="addVariable()">添加</button>
