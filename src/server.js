@@ -1427,6 +1427,12 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
             t.FORM_KEY_ as formKey,
+            t.PARENT_TASK_ID_ as parentTaskId,
+            t.DESCRIPTION_ as description,
+            t.OWNER_ as owner,
+            t.CATEGORY_ as category,
+            t.TENANT_ID_ as tenantId,
+            t.EXECUTION_ID_ as executionId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
@@ -1531,10 +1537,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 7. 创建任务，使用原来的任务ID
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             `
             await db.execute(insertTaskSql, [
                 targetTaskId, 
@@ -1542,11 +1549,16 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskData.executionId || instanceId, 
                 instanceId, 
                 taskData.procDefId, 
                 taskData.taskDefKey,
-                taskData.formKey
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 8. 恢复身份关联（仅当有候选人时）
@@ -1687,10 +1699,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 创建任务，使用原来的任务ID
             const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
             `
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
@@ -1698,11 +1711,16 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskData.executionId || instanceId, 
                 instanceId, 
                 taskData.procDefId, 
                 taskData.taskDefKey,
-                taskData.formKey
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 恢复身份关联（仅当有候选人时）
@@ -1805,6 +1823,12 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
             t.FORM_KEY_ as formKey,
+            t.PARENT_TASK_ID_ as parentTaskId,
+            t.DESCRIPTION_ as description,
+            t.OWNER_ as owner,
+            t.CATEGORY_ as category,
+            t.TENANT_ID_ as tenantId,
+            t.EXECUTION_ID_ as executionId,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
@@ -2015,10 +2039,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 创建任务，使用原来的任务ID
             const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
-                    ID_, REV_, NAME_, PRIORITY_, 
-                    CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)
+                    ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
+                    ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, 
+                    TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
             `
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
@@ -2026,11 +2051,16 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskData.executionId || instanceId, 
                 instanceId, 
                 taskData.procDefId, 
                 taskData.taskDefKey,
-                taskData.formKey
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 恢复身份关联（仅当有候选人时）
