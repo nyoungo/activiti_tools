@@ -1641,13 +1641,13 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.execute(updateTaskSql, [instanceId, targetTaskId])
             
-            // 12. 更新目标历史活动，清除结束时间
+            // 12. 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
             const updateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = ?
                 WHERE TASK_ID_ = ?
             `
-            await db.execute(updateActInstSql, [targetTaskId])
+            await db.execute(updateActInstSql, [instanceId, targetTaskId])
             
             // 14. 更新历史流程实例
             const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
