@@ -579,7 +579,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 </select>
                             </td>
                             <td>
-                                <input type="text" value="${v.value || ''}" id="var-${v.name}" ${isByteArray ? 'readonly' : ''}>
+                                <input type="text" value="${(v.value || '').replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '')}" id="var-${v.name}" ${isByteArray ? 'readonly' : ''}>
                             </td>
                             <td>
                                 <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')" ${isByteArray ? 'disabled' : ''}>保存</button>
