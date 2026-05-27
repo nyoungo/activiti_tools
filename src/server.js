@@ -1621,7 +1621,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             
             const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
-                SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
+                SET IS_ACTIVE_ = true, IS_SCOPE_ = true,
                     START_TIME_ = $1, START_USER_ID_ = $2
                 WHERE ID_ = $3
             `
@@ -1937,7 +1937,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
                     PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
                     START_TIME_, START_USER_ID_
-                ) VALUES ($1, 1, $2, $3, $4, 1, 1, $5, $6)
+                ) VALUES ($1, 1, $2, $3, $4, true, true, $5, $6)
             `
             await client.query(pgInsertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
             
