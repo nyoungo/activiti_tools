@@ -2114,21 +2114,21 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 9.1 删除历史评论（包括目标任务和之后的任务）
             await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
             
-            // 10. 更新目标历史任务，清除结束时间和审批人，execution_id_与proc_inst_id_一致
+            // 10. 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL, EXECUTION_ID_ = ?
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = ?
             `
-            await db.execute(updateTaskSql, [instanceId, targetTaskId])
+            await db.execute(updateTaskSql, [targetTaskId])
             
-            // 11. 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
+            // 11. 更新目标历史活动，清除结束时间，保持原来的execution_id_
             const updateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = ?
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE TASK_ID_ = ?
             `
-            await db.execute(updateActInstSql, [instanceId, targetTaskId])
+            await db.execute(updateActInstSql, [targetTaskId])
             
             // 13. 更新历史流程实例
             const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
@@ -2147,6 +2147,10 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         try {
             await client.query('BEGIN')
             
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，需要创建两条执行实例
+            const isExecutionDifferent = taskData.executionId && taskData.executionId !== instanceId
+            
+            // 创建主执行实例（ID = instanceId）
             const pgInsertExecSql = `
                 INSERT INTO ACT_RU_EXECUTION (
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
@@ -2155,6 +2159,28 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 ) VALUES ($1, 1, $2, $3, $4, true, true, $5, $6, $7)
             `
             await client.query(pgInsertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId, taskData.actId])
+            
+            // 如果 execution_id_ 和 proc_inst_id_ 不一致，创建子执行实例
+            if (isExecutionDifferent) {
+                const pgInsertSubExecSql = `
+                    INSERT INTO ACT_RU_EXECUTION (
+                        ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
+                        PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_, IS_CONCURRENT_,
+                        START_TIME_, START_USER_ID_, ACT_ID_, PARENT_ID_, TENANT_ID_
+                    ) VALUES ($1, 1, $2, $3, $4, true, false, false, $5, $6, $7, $8, $9)
+                `
+                await client.query(pgInsertSubExecSql, [
+                    taskData.executionId,
+                    instanceId,
+                    taskData.businessKey,
+                    taskData.procDefId,
+                    taskData.taskCreateTime,
+                    taskData.startUserId,
+                    taskData.actId,
+                    instanceId,
+                    taskData.tenantId
+                ])
+            }
             
             // 查询身份关联（候选人）
             const pgIdentitySql = `
@@ -2171,7 +2197,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 创建任务，使用原来的任务ID，execution_id_与proc_inst_id_一致
+            // 创建任务，使用原来的任务ID和原来的execution_id_
             const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, CREATE_TIME_, 
@@ -2180,13 +2206,15 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                     DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14, $15)
             `
+            // 使用原来的execution_id_，如果不存在则使用instanceId
+            const pgTaskExecutionId = taskData.executionId || instanceId
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                pgTaskExecutionId, 
                 instanceId, 
                 taskData.procDefId, 
                 taskData.taskDefKey,
@@ -2265,21 +2293,21 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 删除历史评论（包括目标任务和之后的任务）
             await client.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
             
-            // 更新目标历史任务，清除结束时间和审批人，execution_id_与proc_inst_id_一致
+            // 更新目标历史任务，清除结束时间和审批人，保持原来的execution_id_
             const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL, EXECUTION_ID_ = $2
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, ASSIGNEE_ = NULL
                 WHERE ID_ = $1
             `
-            await client.query(pgUpdateTaskSql, [targetTaskId, instanceId])
+            await client.query(pgUpdateTaskSql, [targetTaskId])
             
-            // 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
+            // 更新目标历史活动，清除结束时间，保持原来的execution_id_
             const pgUpdateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = $2
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE TASK_ID_ = $1
             `
-            await client.query(pgUpdateActInstSql, [targetTaskId, instanceId])
+            await client.query(pgUpdateActInstSql, [targetTaskId])
             
             const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
             await client.query(pgUpdateProcInstSql, [instanceId])
