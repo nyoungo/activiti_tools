@@ -1581,8 +1581,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 // 10.1 删除历史评论
                 await db.execute(`DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
                 
-                // 10.2 删除历史身份关联（保留candidate类型）
-                await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders}) AND TYPE_ != 'candidate'`, taskIdsToDelete)
+                // 10.2 删除历史身份关联（包括candidate类型）
+                await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
                 
                 // 10.3 删除历史活动
                 const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
@@ -1721,8 +1721,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 const pgDelCommentSql = `DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelCommentSql, taskIdsToDelete)
                 
-                // 9.2 删除历史身份关联（保留candidate类型）
-                const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders}) AND TYPE_ != 'candidate'`
+                // 9.2 删除历史身份关联（包括candidate类型）
+                const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelIdentitySql, taskIdsToDelete)
                 
                 // 9.3 删除历史活动
