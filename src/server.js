@@ -1667,7 +1667,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 UPDATE ACT_RU_EXECUTION 
                 SET IS_ACTIVE_ = true, IS_SCOPE_ = true, IS_CONCURRENT_ = false,
                     START_TIME_ = $1, START_USER_ID_ = $2, ACT_ID_ = $3,
-                    PROC_DEF_ID_ = $4, BUSSINESS_KEY_ = $5, TENANT_ID_ = $6
+                    PROC_DEF_ID_ = $4, BUSINESS_KEY_ = $5, TENANT_ID_ = $6
                 WHERE ID_ = $7
             `
             await client.query(pgUpdateExecSql, [
