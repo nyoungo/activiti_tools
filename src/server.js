@@ -482,6 +482,15 @@ async function testConnection(config) {
                 database: config.database
             })
             await conn.ping()
+            
+            // 验证 Activiti 表是否存在
+            const [tables] = await conn.execute(
+                'SHOW TABLES LIKE ?', 
+                ['ACT_HI_PROCINST']
+            )
+            if (!tables || tables.length === 0) {
+                throw new Error('连接成功，但未找到 Activiti 工作流相关表，请检查数据库名称是否正确')
+            }
         } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
             const poolConfig = {
                 host: config.host,
@@ -495,6 +504,24 @@ async function testConnection(config) {
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
+            
+            // 验证 Activiti 表是否存在
+            const tableCheckQuery = config.schema 
+                ? `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'act_hi_procinst')`
+                : `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'act_hi_procinst')`
+            
+            const params = config.schema ? [config.schema] : []
+            const result = await conn.query(tableCheckQuery, params)
+            
+            const tableExists = result.rows && result.rows[0] && Object.values(result.rows[0])[0]
+            
+            if (!tableExists) {
+                if (config.schema) {
+                    throw new Error(`连接成功，但在 schema "${config.schema}" 中未找到 Activiti 工作流相关表，请检查 schema 名称是否正确`)
+                } else {
+                    throw new Error('连接成功，但未找到 Activiti 工作流相关表，请检查数据库名称是否正确，或填写正确的 schema 名称')
+                }
+            }
         }
     } finally {
         if (conn) {
