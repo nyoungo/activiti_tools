@@ -573,8 +573,8 @@ async function testConnection(config) {
             
             // 验证 Activiti 表是否存在
             const [tables] = await conn.execute(
-                'SHOW TABLES LIKE ?', 
-                ['ACT_HI_PROCINST']
+                'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+                [config.database, 'ACT_HI_PROCINST']
             )
             if (!tables || tables.length === 0) {
                 throw new Error('连接成功，但未找到 Activiti 工作流相关表，请检查数据库名称是否正确')
