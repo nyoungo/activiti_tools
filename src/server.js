@@ -1497,13 +1497,29 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
             
-            // 5. 查询身份关联（候选人）
-            const identitySql = `
+            // 5. 查询身份关联（候选人）- 先查运行时表，再查历史表
+            let identityLinks = []
+            
+            // 5.1 先从运行时身份关联表查询候选人
+            const ruIdentitySql = `
                 SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-                FROM ACT_HI_IDENTITYLINK
+                FROM ACT_RU_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
-            const [identityLinks] = await db.execute(identitySql, [targetTaskId])
+            const [ruIdentityLinks] = await db.execute(ruIdentitySql, [targetTaskId])
+            
+            // 5.2 如果运行时表没有，再从历史身份关联表查询
+            if (ruIdentityLinks.length === 0) {
+                const hiIdentitySql = `
+                    SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                    FROM ACT_HI_IDENTITYLINK
+                    WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
+                `
+                const [hiIdentityLinks] = await db.execute(hiIdentitySql, [targetTaskId])
+                identityLinks = hiIdentityLinks
+            } else {
+                identityLinks = ruIdentityLinks
+            }
             
             // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
@@ -1636,13 +1652,29 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
             
             // 查询身份关联（候选人）
-            const pgIdentitySql = `
+            // 查询身份关联（候选人）- 先查运行时表，再查历史表
+            let identityLinks = []
+            
+            // 5.1 先从运行时身份关联表查询候选人
+            const pgRuIdentitySql = `
                 SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
-                FROM ACT_HI_IDENTITYLINK
+                FROM ACT_RU_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
-            const identityResult = await client.query(pgIdentitySql, [targetTaskId])
-            const identityLinks = identityResult.rows
+            const ruIdentityResult = await client.query(pgRuIdentitySql, [targetTaskId])
+            
+            // 5.2 如果运行时表没有，再从历史身份关联表查询
+            if (ruIdentityResult.rows.length === 0) {
+                const pgHiIdentitySql = `
+                    SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
+                    FROM ACT_HI_IDENTITYLINK
+                    WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
+                `
+                const hiIdentityResult = await client.query(pgHiIdentitySql, [targetTaskId])
+                identityLinks = hiIdentityResult.rows
+            } else {
+                identityLinks = ruIdentityResult.rows
+            }
             
             // 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
