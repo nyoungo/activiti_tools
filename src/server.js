@@ -1426,6 +1426,7 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.START_TIME_ as taskCreateTime,
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
+            t.FORM_KEY_ as formKey,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
@@ -1532,8 +1533,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
             `
             await db.execute(insertTaskSql, [
                 targetTaskId, 
@@ -1544,7 +1545,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 instanceId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey
             ])
             
             // 8. 恢复身份关联（仅当有候选人时）
@@ -1687,8 +1689,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)
             `
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
@@ -1699,7 +1701,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 instanceId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey
             ])
             
             // 恢复身份关联（仅当有候选人时）
@@ -1801,6 +1804,7 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             t.START_TIME_ as taskCreateTime,
             t.ASSIGNEE_ as taskAssignee,
             t.PRIORITY_ as priority,
+            t.FORM_KEY_ as formKey,
             p.ID_ as procInstId,
             p.BUSINESS_KEY_ as businessKey,
             p.START_TIME_ as startTime,
@@ -2013,8 +2017,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_
+                ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)
             `
             await client.query(pgInsertTaskSql, [
                 targetTaskId, 
@@ -2025,7 +2029,8 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 instanceId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey
             ])
             
             // 恢复身份关联（仅当有候选人时）
