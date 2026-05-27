@@ -1929,13 +1929,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
-            // 6. 创建任务，使用原来的任务ID
+            // 6. 创建任务，使用原来的任务ID和EXECUTION_ID
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
-                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_, FORM_KEY_, PARENT_TASK_ID_, 
+                    DESCRIPTION_, OWNER_, CATEGORY_, TENANT_ID_
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             `
             await db.execute(insertTaskSql, [
                 targetTaskId, 
@@ -1943,10 +1944,16 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskData.priority || 50, 
                 taskData.taskCreateTime, 
                 taskAssignee,
-                instanceId, 
+                taskData.executionId || instanceId, 
                 instanceId, 
                 taskData.procDefId, 
-                taskData.taskDefKey
+                taskData.taskDefKey,
+                taskData.formKey,
+                taskData.parentTaskId,
+                taskData.description,
+                taskData.owner,
+                taskData.category,
+                taskData.tenantId
             ])
             
             // 7. 恢复身份关联（仅当有候选人时）
