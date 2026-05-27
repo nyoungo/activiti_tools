@@ -880,65 +880,119 @@ async function getProcessVariables(db, dbType, instanceId) {
 }
 
 async function setProcessVariable(db, dbType, instanceId, variable) {
-    // 1. 先删除运行时变量
-    let deleteSql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    await query(db, dbType, deleteSql, [instanceId, variable.name])
-    
-    // 2. 删除历史变量
-    let deleteHiSql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    await query(db, dbType, deleteHiSql, [instanceId, variable.name])
-    
-    // 3. 插入运行时变量
-    let insertRuSql, ruParams
-    let insertHiSql, hiParams
-    
+    // 首先检查变量是否存在
+    let checkSql, checkParams
     if (dbType === 'mysql') {
-        insertRuSql = `
-            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (UUID(), ?, ?, ?, ?, ?, ?)
-        `
-        ruParams = [instanceId, variable.name, variable.type]
+        checkSql = 'SELECT ID_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+        checkParams = [instanceId, variable.name]
+        const [checkResult] = await db.execute(checkSql, checkParams)
+        const variableExists = checkResult.length > 0
         
-        insertHiSql = `
-            INSERT INTO ACT_HI_VARINST (ID_, PROC_INST_ID_, NAME_, VAR_TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (UUID(), ?, ?, ?, ?, ?, ?)
-        `
-        hiParams = [instanceId, variable.name, variable.type]
+        // 根据变量类型设置值
+        let textVal = null, doubleVal = null, longVal = null
+        switch (variable.type) {
+            case 'string':
+                textVal = variable.value
+                break
+            case 'long':
+                longVal = parseInt(variable.value)
+                break
+            case 'double':
+                doubleVal = parseFloat(variable.value)
+                break
+            default:
+                textVal = String(variable.value)
+        }
+        
+        if (variableExists) {
+            // 更新已存在的变量
+            const updateRuSql = `
+                UPDATE ACT_RU_VARIABLE 
+                SET TYPE_ = ?, TEXT_ = ?, DOUBLE_ = ?, LONG_ = ?
+                WHERE PROC_INST_ID_ = ? AND NAME_ = ?
+            `
+            const updateParams = [variable.type, textVal, doubleVal, longVal, instanceId, variable.name]
+            await db.execute(updateRuSql, updateParams)
+            
+            const updateHiSql = `
+                UPDATE ACT_HI_VARINST 
+                SET VAR_TYPE_ = ?, TEXT_ = ?, DOUBLE_ = ?, LONG_ = ?
+                WHERE PROC_INST_ID_ = ? AND NAME_ = ?
+            `
+            await db.execute(updateHiSql, updateParams)
+        } else {
+            // 插入新变量
+            const insertRuSql = `
+                INSERT INTO ACT_RU_VARIABLE (ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
+                VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?)
+            `
+            const ruParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            
+            const insertHiSql = `
+                INSERT INTO ACT_HI_VARINST (ID_, NAME_, VAR_TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
+                VALUES (UUID(), ?, ?, ?, ?, ?, ?)
+            `
+            const hiParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            
+            await db.execute(insertRuSql, ruParams)
+            await db.execute(insertHiSql, hiParams)
+        }
     } else {
-        insertRuSql = `
-            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
-        `
-        ruParams = [instanceId, variable.name, variable.type]
+        checkSql = 'SELECT ID_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1 AND NAME_ = $2'
+        checkParams = [instanceId, variable.name]
+        const checkResult = await db.query(checkSql, checkParams)
+        const variableExists = checkResult.rows.length > 0
         
-        insertHiSql = `
-            INSERT INTO ACT_HI_VARINST (ID_, PROC_INST_ID_, NAME_, VAR_TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
-        `
-        hiParams = [instanceId, variable.name, variable.type]
+        // 根据变量类型设置值
+        let textVal = null, doubleVal = null, longVal = null
+        switch (variable.type) {
+            case 'string':
+                textVal = variable.value
+                break
+            case 'long':
+                longVal = parseInt(variable.value)
+                break
+            case 'double':
+                doubleVal = parseFloat(variable.value)
+                break
+            default:
+                textVal = String(variable.value)
+        }
+        
+        if (variableExists) {
+            // 更新已存在的变量
+            const updateRuSql = `
+                UPDATE ACT_RU_VARIABLE 
+                SET TYPE_ = $1, TEXT_ = $2, DOUBLE_ = $3, LONG_ = $4
+                WHERE PROC_INST_ID_ = $5 AND NAME_ = $6
+            `
+            const updateParams = [variable.type, textVal, doubleVal, longVal, instanceId, variable.name]
+            await db.query(updateRuSql, updateParams)
+            
+            const updateHiSql = `
+                UPDATE ACT_HI_VARINST 
+                SET VAR_TYPE_ = $1, TEXT_ = $2, DOUBLE_ = $3, LONG_ = $4
+                WHERE PROC_INST_ID_ = $5 AND NAME_ = $6
+            `
+            await db.query(updateHiSql, updateParams)
+        } else {
+            // 插入新变量
+            const insertRuSql = `
+                INSERT INTO ACT_RU_VARIABLE (ID_, REV_, NAME_, TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
+                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+            `
+            const ruParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            
+            const insertHiSql = `
+                INSERT INTO ACT_HI_VARINST (ID_, NAME_, VAR_TYPE_, PROC_INST_ID_, TEXT_, DOUBLE_, LONG_)
+                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+            `
+            const hiParams = [variable.name, variable.type, instanceId, textVal, doubleVal, longVal]
+            
+            await db.query(insertRuSql, ruParams)
+            await db.query(insertHiSql, hiParams)
+        }
     }
-    
-    // 设置值
-    switch (variable.type) {
-        case 'string':
-            ruParams.push(variable.value, null, null)
-            hiParams.push(variable.value, null, null)
-            break
-        case 'long':
-            ruParams.push(null, null, parseInt(variable.value))
-            hiParams.push(null, null, parseInt(variable.value))
-            break
-        case 'double':
-            ruParams.push(null, parseFloat(variable.value), null)
-            hiParams.push(null, parseFloat(variable.value), null)
-            break
-        default:
-            ruParams.push(String(variable.value), null, null)
-            hiParams.push(String(variable.value), null, null)
-    }
-    
-    await query(db, dbType, insertRuSql, ruParams)
-    await query(db, dbType, insertHiSql, hiParams)
 }
 
 async function deleteProcessVariable(db, dbType, instanceId, name) {
