@@ -579,7 +579,7 @@ async function showInstanceDetail(instanceId, isFinished = false) {
                                 </select>
                             </td>
                             <td>
-                                <textarea id="var-${v.name}" rows="1" style="resize: vertical; min-height: 36px;" ${isByteArray ? 'readonly' : ''}>${String(v.value || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&/g, '&amp;')}</textarea>
+                                <textarea id="var-${v.name}" rows="1" style="resize: vertical; min-height: 36px;" ${isByteArray ? 'readonly' : ''}>${formatVariableValue(v.value)}</textarea>
                             </td>
                             <td>
                                 <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')" ${isByteArray ? 'disabled' : ''}>保存</button>
@@ -652,6 +652,20 @@ async function addVariable() {
     document.getElementById('newVarValue').value = ''
 
     showInstanceDetail(state.currentInstanceId)
+}
+
+// 格式化变量值用于显示
+function formatVariableValue(value) {
+    if (value === null || value === undefined) {
+        return ''
+    }
+    if (typeof value === 'object') {
+        return JSON.stringify(value, null, 2)
+    }
+    if (typeof value === 'string') {
+        return value.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&/g, '&amp;')
+    }
+    return String(value)
 }
 
 // 更新变量类型
