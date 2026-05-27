@@ -24,10 +24,8 @@ let activitiDb = null
 let dbConfig = null
 let localDb = null
 
-// 用户缓存
+// 用户缓存 - 本次连接一直缓存
 let cachedUsers = null
-let cacheTimestamp = 0
-const CACHE_DURATION = 300000 // 5分钟缓存
 
 app.use(cors())
 app.use(express.json())
@@ -855,13 +853,13 @@ async function getProcessVariables(db, dbType, instanceId) {
     let sql
     if (dbType === 'mysql') {
         sql = `
-            SELECT NAME_ as name, TYPE_ as \`type\`, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`
+            SELECT NAME_ as name, TYPE_ as \`type\`, TEXT_ as textValue, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = ?
         `
     } else {
         sql = `
-            SELECT NAME_ as name, TYPE_ as "type", TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long"
+            SELECT NAME_ as name, TYPE_ as "type", TEXT_ as textValue, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
             FROM ACT_RU_VARIABLE
             WHERE PROC_INST_ID_ = $1
         `
@@ -872,62 +870,294 @@ async function getProcessVariables(db, dbType, instanceId) {
     return rows.map(v => {
         let value
         switch (v.type) {
-            case 'string': value = v.textValue; break
-            case 'long': value = v.long; break
-            case 'double': value = v.double; break
-            default: value = v.textValue
+            case 'string': 
+                value = v.textValue; 
+                break
+            case 'long': 
+                value = v.long; 
+                break
+            case 'double': 
+                value = v.double; 
+                break
+            case 'boolean':
+                // boolean 通常也存储在 text_ 字段或 long_ 字段
+                value = v.textValue !== null ? v.textValue : (v.long !== null ? !!v.long : null);
+                break
+            default: 
+                // 对于其他类型（包括 bytearray）显示占位符
+                value = v.bytearrayId !== null ? '[byteArray]' : v.textValue;
         }
         return { name: v.name, type: v.type, value }
     })
 }
 
 async function setProcessVariable(db, dbType, instanceId, variable) {
-    let deleteSql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    if (dbType === 'postgres') {
-        deleteSql = deleteSql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
-    await query(db, dbType, deleteSql, [instanceId, variable.name])
+    // 首先检查变量是否存在
+    let checkSql, checkParams
     
-    let insertSql
-    let params
-    
+    // 先查询现有变量的详细信息，包括类型
+    let selectSql, selectParams
     if (dbType === 'mysql') {
-        insertSql = `
-            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (UUID(), ?, ?, ?, ?, ?, ?)
-        `
-        params = [instanceId, variable.name, variable.type]
+        selectSql = 'SELECT ID_, TYPE_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+        selectParams = [instanceId, variable.name]
+        const [selectResult] = await db.execute(selectSql, selectParams)
+        const variableExists = selectResult.length > 0
+        
+        // 如果是 bytearray 类型，不允许修改
+        if (variableExists && selectResult[0].TYPE_ && 
+            (selectResult[0].TYPE_.toLowerCase().includes('byte') || selectResult[0].TYPE_.toLowerCase() === 'serializable')) {
+            throw new Error('Bytearray 类型变量不允许修改')
+        }
+        
+        // 根据变量类型设置值，只设置对应字段
+        let setFields = [], setParams = []
+        setParams.push(variable.type) // 首先设置类型
+        
+        switch (variable.type) {
+            case 'string':
+                setFields.push('TEXT_ = ?')
+                setParams.push(variable.value)
+                break
+            case 'long':
+                setFields.push('LONG_ = ?')
+                setParams.push(parseInt(variable.value))
+                break
+            case 'double':
+                setFields.push('DOUBLE_ = ?')
+                setParams.push(parseFloat(variable.value))
+                break
+            case 'boolean':
+                setFields.push('TEXT_ = ?')
+                setParams.push(variable.value ? 'true' : 'false')
+                break
+            default:
+                // 默认按字符串处理
+                setFields.push('TEXT_ = ?')
+                setParams.push(String(variable.value))
+        }
+        
+        // 添加 WHERE 条件参数
+        setParams.push(instanceId)
+        setParams.push(variable.name)
+        
+        if (variableExists) {
+            // 更新已存在的变量
+            const updateRuSql = `UPDATE ACT_RU_VARIABLE SET TYPE_ = ?, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ? AND NAME_ = ?`
+            await db.execute(updateRuSql, setParams)
+            
+            const updateHiSql = `UPDATE ACT_HI_VARINST SET VAR_TYPE_ = ?, ${setFields.join(', ').replace(/TEXT_/g, 'TEXT_').replace(/DOUBLE_/g, 'DOUBLE_').replace(/LONG_/g, 'LONG_')} WHERE PROC_INST_ID_ = ? AND NAME_ = ?`
+            await db.execute(updateHiSql, setParams)
+        } else {
+            // 插入新变量
+            // 准备 insert 字段和值
+            let insertFields = ['ID_', 'REV_', 'NAME_', 'TYPE_', 'PROC_INST_ID_']
+            let insertValues = ['UUID()', '?', '?', '?', '?']
+            let insertParams = [variable.name, variable.type, instanceId]
+            
+            switch (variable.type) {
+                case 'string':
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(variable.value)
+                    break
+                case 'long':
+                    insertFields.push('LONG_')
+                    insertValues.push('?')
+                    insertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    insertFields.push('DOUBLE_')
+                    insertValues.push('?')
+                    insertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    insertFields.push('TEXT_')
+                    insertValues.push('?')
+                    insertParams.push(String(variable.value))
+            }
+            
+            const insertRuSql = `INSERT INTO ACT_RU_VARIABLE (${insertFields.join(', ')}) VALUES (${insertValues.join(', ')})`
+            await db.execute(insertRuSql, [''].concat(insertParams).slice(1)) // 跳过 UUID() 的占位符
+            
+            // 历史表插入
+            let hiInsertFields = ['ID_', 'NAME_', 'VAR_TYPE_', 'PROC_INST_ID_']
+            let hiInsertValues = ['UUID()', '?', '?', '?']
+            let hiInsertParams = [variable.name, variable.type, instanceId]
+            
+            switch (variable.type) {
+                case 'string':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(variable.value)
+                    break
+                case 'long':
+                    hiInsertFields.push('LONG_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    hiInsertFields.push('DOUBLE_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push('?')
+                    hiInsertParams.push(String(variable.value))
+            }
+            
+            const insertHiSql = `INSERT INTO ACT_HI_VARINST (${hiInsertFields.join(', ')}) VALUES (${hiInsertValues.join(', ')})`
+            await db.execute(insertHiSql, [''].concat(hiInsertParams).slice(1)) // 跳过 UUID() 的占位符
+        }
     } else {
-        insertSql = `
-            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-        `
-        params = [instanceId, variable.name, variable.type]
+        selectSql = 'SELECT ID_, TYPE_ FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1 AND NAME_ = $2'
+        selectParams = [instanceId, variable.name]
+        const selectResult = await db.query(selectSql, selectParams)
+        const variableExists = selectResult.rows.length > 0
+        
+        // 如果是 bytearray 类型，不允许修改
+        if (variableExists && selectResult.rows[0].TYPE_ && 
+            (selectResult.rows[0].TYPE_.toLowerCase().includes('byte') || selectResult.rows[0].TYPE_.toLowerCase() === 'serializable')) {
+            throw new Error('Bytearray 类型变量不允许修改')
+        }
+        
+        // 根据变量类型设置值，只设置对应字段
+        let setFields = [], setParams = []
+        let paramIndex = 1
+        setParams.push(variable.type) // 首先设置类型
+        paramIndex++
+        
+        switch (variable.type) {
+            case 'string':
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(variable.value)
+                break
+            case 'long':
+                setFields.push(`LONG_ = $${paramIndex++}`)
+                setParams.push(parseInt(variable.value))
+                break
+            case 'double':
+                setFields.push(`DOUBLE_ = $${paramIndex++}`)
+                setParams.push(parseFloat(variable.value))
+                break
+            case 'boolean':
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(variable.value ? 'true' : 'false')
+                break
+            default:
+                // 默认按字符串处理
+                setFields.push(`TEXT_ = $${paramIndex++}`)
+                setParams.push(String(variable.value))
+        }
+        
+        // 添加 WHERE 条件参数
+        const whereProcIdParam = `$${paramIndex++}`
+        const whereNameParam = `$${paramIndex++}`
+        setParams.push(instanceId)
+        setParams.push(variable.name)
+        
+        if (variableExists) {
+            // 更新已存在的变量
+            const updateRuSql = `UPDATE ACT_RU_VARIABLE SET TYPE_ = $1, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ${whereProcIdParam} AND NAME_ = ${whereNameParam}`
+            await db.query(updateRuSql, setParams)
+            
+            const updateHiSql = `UPDATE ACT_HI_VARINST SET VAR_TYPE_ = $1, ${setFields.join(', ')} WHERE PROC_INST_ID_ = ${whereProcIdParam} AND NAME_ = ${whereNameParam}`
+            await db.query(updateHiSql, setParams)
+        } else {
+            // 插入新变量
+            // 准备 insert 字段和值
+            let insertFields = ['ID_', 'REV_', 'NAME_', 'TYPE_', 'PROC_INST_ID_']
+            let insertValues = ['gen_random_uuid()', '1', '$1', '$2', '$3']
+            let insertParams = [variable.name, variable.type, instanceId]
+            let insertParamIndex = 4
+            
+            switch (variable.type) {
+                case 'string':
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(variable.value)
+                    break
+                case 'long':
+                    insertFields.push('LONG_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    insertFields.push('DOUBLE_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    insertFields.push('TEXT_')
+                    insertValues.push(`$${insertParamIndex++}`)
+                    insertParams.push(String(variable.value))
+            }
+            
+            const insertRuSql = `INSERT INTO ACT_RU_VARIABLE (${insertFields.join(', ')}) VALUES (${insertValues.join(', ')})`
+            await db.query(insertRuSql, insertParams)
+            
+            // 历史表插入
+            let hiInsertFields = ['ID_', 'NAME_', 'VAR_TYPE_', 'PROC_INST_ID_']
+            let hiInsertValues = ['gen_random_uuid()', '$1', '$2', '$3']
+            let hiInsertParams = [variable.name, variable.type, instanceId]
+            let hiInsertParamIndex = 4
+            
+            switch (variable.type) {
+                case 'string':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(variable.value)
+                    break
+                case 'long':
+                    hiInsertFields.push('LONG_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(parseInt(variable.value))
+                    break
+                case 'double':
+                    hiInsertFields.push('DOUBLE_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(parseFloat(variable.value))
+                    break
+                case 'boolean':
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(variable.value ? 'true' : 'false')
+                    break
+                default:
+                    hiInsertFields.push('TEXT_')
+                    hiInsertValues.push(`$${hiInsertParamIndex++}`)
+                    hiInsertParams.push(String(variable.value))
+            }
+            
+            const insertHiSql = `INSERT INTO ACT_HI_VARINST (${hiInsertFields.join(', ')}) VALUES (${hiInsertValues.join(', ')})`
+            await db.query(insertHiSql, hiInsertParams)
+        }
     }
-    
-    switch (variable.type) {
-        case 'string':
-            params.push(variable.value, null, null)
-            break
-        case 'long':
-            params.push(null, null, parseInt(variable.value))
-            break
-        case 'double':
-            params.push(null, parseFloat(variable.value), null)
-            break
-        default:
-            params.push(String(variable.value), null, null)
-    }
-    
-    await query(db, dbType, insertSql, params)
 }
 
 async function deleteProcessVariable(db, dbType, instanceId, name) {
+    // 删除运行时变量
     let sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
     await query(db, dbType, sql, [instanceId, name])
+    
+    // 删除历史变量
+    let hiSql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+    await query(db, dbType, hiSql, [instanceId, name])
 }
 
 async function getProcessDefinitions(db, dbType) {
@@ -1071,10 +1301,8 @@ async function getHistoryTasks(db, dbType, instanceId) {
 }
 
 async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
-    let sql, params
-    
     // 1. 查询历史任务数据
-    sql = `
+    let taskSql = `
         SELECT 
             t.ID_ as taskId,
             t.NAME_ as taskName,
@@ -1091,17 +1319,18 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
-    params = [targetTaskId, instanceId]
-    if (dbType === 'postgres' || dbType === 'hgdatabase') {
-        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
+    const taskParams = [targetTaskId, instanceId]
     
     let taskRows
     if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, params)
+        const [result] = await db.execute(taskSql, taskParams)
         taskRows = result
     } else {
-        taskRows = await query(db, dbType, sql, params)
+        // 转换占位符
+        let pgTaskSql = taskSql
+        let paramIndex = 1
+        pgTaskSql = pgTaskSql.replace(/\?/g, () => `$${paramIndex++}`)
+        taskRows = await query(db, dbType, pgTaskSql, taskParams)
     }
     
     if (taskRows.length === 0) {
@@ -1111,14 +1340,16 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
     const taskData = taskRows[0]
     
     // 2. 查询目标任务之后的所有历史记录，准备删除
-    sql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
+    let allTaskSql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
+    let allTaskParams = [instanceId]
     
     let allTaskRows
     if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, [instanceId])
+        const [result] = await db.execute(allTaskSql, allTaskParams)
         allTaskRows = result
     } else {
-        allTaskRows = await query(db, dbType, sql, [instanceId])
+        let pgAllTaskSql = allTaskSql.replace(/\?/, '$1')
+        allTaskRows = await query(db, dbType, pgAllTaskSql, allTaskParams)
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
@@ -1143,21 +1374,21 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await db.execute('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ?', [instanceId])
             
             // 4. 更新执行实例状态，保持开始时间和发起人
-            sql = `
+            const updateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
                 SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
                     START_TIME_ = ?, START_USER_ID_ = ?
                 WHERE ID_ = ?
             `
-            await db.execute(sql, [taskData.startTime, taskData.startUserId, instanceId])
+            await db.execute(updateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
             
             // 5. 查询身份关联（候选人）
-            sql = `
+            const identitySql = `
                 SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
-            const [identityLinks] = await db.execute(sql, [targetTaskId])
+            const [identityLinks] = await db.execute(identitySql, [targetTaskId])
             
             // 6. 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
@@ -1166,14 +1397,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             // 7. 创建任务，使用原来的任务ID
-            sql = `
+            const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
                     PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
                 ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             `
-            await db.execute(sql, [
+            await db.execute(insertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
@@ -1188,34 +1419,34 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 8. 恢复身份关联（仅当有候选人时）
             for (const link of identityLinks) {
                 const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-                sql = `
+                const insertLinkSql = `
                     INSERT INTO ACT_RU_IDENTITYLINK (
                         ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                     ) VALUES (?, 1, ?, ?, ?, ?, ?)
                 `
-                await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+                await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
             // 9. 恢复变量
-            sql = `
+            const selectVarSql = `
                 SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
             `
-            const [varRows] = await db.execute(sql, [instanceId])
+            const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
                 const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
-                sql = `
+                const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                         TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
                     ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
-                await db.execute(sql, [
+                await db.execute(insertVarSql, [
                     varId, 
                     v.name, 
                     varType, 
@@ -1231,29 +1462,29 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 10. 删除目标任务之后的历史活动
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
-                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-                await db.execute(sql, taskIdsToDelete)
+                const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await db.execute(delActInstSql, taskIdsToDelete)
                 
                 // 11. 删除目标任务之后的历史任务
-                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-                await db.execute(sql, taskIdsToDelete)
+                const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await db.execute(delTaskInstSql, taskIdsToDelete)
             }
             
             // 12. 删除活动历史
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-            await db.execute(sql, [instanceId])
+            const delAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
+            await db.execute(delAllActInstSql, [instanceId])
             
             // 13. 更新目标历史任务
-            sql = `
+            const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
                 SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE ID_ = ?
             `
-            await db.execute(sql, [targetTaskId])
+            await db.execute(updateTaskSql, [targetTaskId])
             
             // 14. 更新历史流程实例
-            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
-            await db.execute(sql, [instanceId])
+            const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+            await db.execute(updateProcInstSql, [instanceId])
             
             // 提交事务
             await db.commit()
@@ -1273,21 +1504,21 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             await client.query('DELETE FROM ACT_RU_EXECUTION WHERE PROC_INST_ID_ = $1 AND PARENT_ID_ IS NOT NULL', [instanceId])
             await client.query('DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = $1', [instanceId])
             
-            sql = `
+            const pgUpdateExecSql = `
                 UPDATE ACT_RU_EXECUTION 
                 SET IS_ACTIVE_ = 1, IS_SCOPE_ = 1,
                     START_TIME_ = $1, START_USER_ID_ = $2
                 WHERE ID_ = $3
             `
-            await client.query(sql, [taskData.startTime, taskData.startUserId, instanceId])
+            await client.query(pgUpdateExecSql, [taskData.startTime, taskData.startUserId, instanceId])
             
             // 查询身份关联（候选人）
-            sql = `
+            const pgIdentitySql = `
                 SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
-            const identityResult = await client.query(sql, [targetTaskId])
+            const identityResult = await client.query(pgIdentitySql, [targetTaskId])
             const identityLinks = identityResult.rows
             
             // 确定任务审批人：如果没有候选人，使用历史任务的审批人
@@ -1297,14 +1528,14 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             // 创建任务，使用原来的任务ID
-            sql = `
+            const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
                     PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
             `
-            await client.query(sql, [
+            await client.query(pgInsertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
@@ -1319,34 +1550,34 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 恢复身份关联（仅当有候选人时）
             for (const link of identityLinks) {
                 const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-                sql = `
+                const pgInsertLinkSql = `
                     INSERT INTO ACT_RU_IDENTITYLINK (
                         ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                     ) VALUES ($1, 1, $2, $3, $4, $5, $6)
                 `
-                await client.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+                await client.query(pgInsertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            sql = `
+            const pgSelectVarSql = `
                 SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
             `
-            const varResult = await client.query(sql, [instanceId])
+            const varResult = await client.query(pgSelectVarSql, [instanceId])
             const varRows = varResult.rows
             
             for (const v of varRows) {
                 const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
-                sql = `
+                const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                         TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
                     ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
                 `
-                await client.query(sql, [
+                await client.query(pgInsertVarSql, [
                     varId, 
                     v.name, 
                     varType, 
@@ -1362,25 +1593,25 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 删除目标任务之后的历史
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
-                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-                await client.query(sql, taskIdsToDelete)
+                const pgDelActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(pgDelActInstSql, taskIdsToDelete)
                 
-                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-                await client.query(sql, taskIdsToDelete)
+                const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
             
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-            await client.query(sql, [instanceId])
+            const pgDelAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
+            await client.query(pgDelAllActInstSql, [instanceId])
             
-            sql = `
+            const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
                 SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE ID_ = $1
             `
-            await client.query(sql, [targetTaskId])
+            await client.query(pgUpdateTaskSql, [targetTaskId])
             
-            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
-            await client.query(sql, [instanceId])
+            const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+            await client.query(pgUpdateProcInstSql, [instanceId])
             
             await client.query('COMMIT')
         } catch (error) {
@@ -1393,10 +1624,8 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
 }
 
 async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
-    let sql, params
-    
     // 1. 查询历史任务数据
-    sql = `
+    let taskSql = `
         SELECT 
             t.ID_ as taskId,
             t.NAME_ as taskName,
@@ -1413,17 +1642,18 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         JOIN ACT_HI_PROCINST p ON t.PROC_INST_ID_ = p.ID_
         WHERE t.ID_ = ? AND t.PROC_INST_ID_ = ?
     `
-    params = [targetTaskId, instanceId]
-    if (dbType === 'postgres' || dbType === 'hgdatabase') {
-        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
+    const taskParams = [targetTaskId, instanceId]
     
     let taskRows
     if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, params)
+        const [result] = await db.execute(taskSql, taskParams)
         taskRows = result
     } else {
-        taskRows = await query(db, dbType, sql, params)
+        // 转换占位符
+        let pgTaskSql = taskSql
+        let paramIndex = 1
+        pgTaskSql = pgTaskSql.replace(/\?/g, () => `$${paramIndex++}`)
+        taskRows = await query(db, dbType, pgTaskSql, taskParams)
     }
     
     if (taskRows.length === 0) {
@@ -1433,14 +1663,16 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
     const taskData = taskRows[0]
     
     // 2. 查询目标任务之后的所有历史记录，准备删除
-    sql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
+    let allTaskSql = `SELECT ID_ as id, START_TIME_ as startTime FROM ACT_HI_TASKINST WHERE PROC_INST_ID_ = ? ORDER BY START_TIME_ ASC`
+    let allTaskParams = [instanceId]
     
     let allTaskRows
     if (dbType === 'mysql') {
-        const [result] = await db.execute(sql, [instanceId])
+        const [result] = await db.execute(allTaskSql, allTaskParams)
         allTaskRows = result
     } else {
-        allTaskRows = await query(db, dbType, sql, [instanceId])
+        let pgAllTaskSql = allTaskSql.replace(/\?/, '$1')
+        allTaskRows = await query(db, dbType, pgAllTaskSql, allTaskParams)
     }
     
     // 找到目标任务的索引，收集之后要删除的任务ID
@@ -1459,22 +1691,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         await db.beginTransaction()
         try {
             // 3. 恢复执行实例，使用从历史表获得的所有信息
-            sql = `
+            const insertExecSql = `
                 INSERT INTO ACT_RU_EXECUTION (
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
                     PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
                     START_TIME_, START_USER_ID_
                 ) VALUES (?, 1, ?, ?, ?, 1, 1, ?, ?)
             `
-            await db.execute(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
+            await db.execute(insertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
             
             // 4. 查询身份关联（候选人）
-            sql = `
+            const identitySql = `
                 SELECT TYPE_ as \`type\`, USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = ? AND TYPE_ = 'candidate'
             `
-            const [identityLinks] = await db.execute(sql, [targetTaskId])
+            const [identityLinks] = await db.execute(identitySql, [targetTaskId])
             
             // 5. 确定任务审批人：如果没有候选人，使用历史任务的审批人
             let taskAssignee = null
@@ -1483,14 +1715,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             // 6. 创建任务，使用原来的任务ID
-            sql = `
+            const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
                     PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
                 ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             `
-            await db.execute(sql, [
+            await db.execute(insertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
@@ -1505,34 +1737,34 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 7. 恢复身份关联（仅当有候选人时）
             for (const link of identityLinks) {
                 const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-                sql = `
+                const insertLinkSql = `
                     INSERT INTO ACT_RU_IDENTITYLINK (
                         ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                     ) VALUES (?, 1, ?, ?, ?, ?, ?)
                 `
-                await db.execute(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+                await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
             // 8. 恢复变量
-            sql = `
+            const selectVarSql = `
                 SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
             `
-            const [varRows] = await db.execute(sql, [instanceId])
+            const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
                 const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
-                sql = `
+                const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                         TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
                     ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
-                await db.execute(sql, [
+                await db.execute(insertVarSql, [
                     varId, 
                     v.name, 
                     varType, 
@@ -1548,29 +1780,29 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 9. 删除目标任务之后的历史活动
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
-                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-                await db.execute(sql, taskIdsToDelete)
+                const delActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await db.execute(delActInstSql, taskIdsToDelete)
                 
                 // 10. 删除目标任务之后的历史任务
-                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-                await db.execute(sql, taskIdsToDelete)
+                const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await db.execute(delTaskInstSql, taskIdsToDelete)
             }
             
             // 11. 删除活动历史
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
-            await db.execute(sql, [instanceId])
+            const delAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = ?`
+            await db.execute(delAllActInstSql, [instanceId])
             
             // 12. 更新目标历史任务
-            sql = `
+            const updateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
                 SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE ID_ = ?
             `
-            await db.execute(sql, [targetTaskId])
+            await db.execute(updateTaskSql, [targetTaskId])
             
             // 13. 更新历史流程实例
-            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
-            await db.execute(sql, [instanceId])
+            const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
+            await db.execute(updateProcInstSql, [instanceId])
             
             // 提交事务
             await db.commit()
@@ -1585,22 +1817,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
         try {
             await client.query('BEGIN')
             
-            sql = `
+            const pgInsertExecSql = `
                 INSERT INTO ACT_RU_EXECUTION (
                     ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, 
                     PROC_DEF_ID_, IS_ACTIVE_, IS_SCOPE_,
                     START_TIME_, START_USER_ID_
                 ) VALUES ($1, 1, $2, $3, $4, 1, 1, $5, $6)
             `
-            await client.query(sql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
+            await client.query(pgInsertExecSql, [instanceId, instanceId, taskData.businessKey, taskData.procDefId, taskData.startTime, taskData.startUserId])
             
             // 查询身份关联（候选人）
-            sql = `
+            const pgIdentitySql = `
                 SELECT TYPE_ as "type", USER_ID_ as userId, GROUP_ID_ as groupId, TASK_ID_ as taskId, PROC_INST_ID_ as procInstId
                 FROM ACT_HI_IDENTITYLINK
                 WHERE TASK_ID_ = $1 AND TYPE_ = 'candidate'
             `
-            const identityResult = await client.query(sql, [targetTaskId])
+            const identityResult = await client.query(pgIdentitySql, [targetTaskId])
             const identityLinks = identityResult.rows
             
             // 确定任务审批人：如果没有候选人，使用历史任务的审批人
@@ -1610,14 +1842,14 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             // 创建任务，使用原来的任务ID
-            sql = `
+            const pgInsertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
                     ID_, REV_, NAME_, PRIORITY_, 
                     CREATE_TIME_, ASSIGNEE_, EXECUTION_ID_, PROC_INST_ID_, 
                     PROC_DEF_ID_, TASK_DEF_KEY_, SUSPENSION_STATE_
                 ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
             `
-            await client.query(sql, [
+            await client.query(pgInsertTaskSql, [
                 targetTaskId, 
                 taskData.taskName, 
                 taskData.priority || 50, 
@@ -1632,34 +1864,34 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 恢复身份关联（仅当有候选人时）
             for (const link of identityLinks) {
                 const linkId = `link_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-                sql = `
+                const pgInsertLinkSql = `
                     INSERT INTO ACT_RU_IDENTITYLINK (
                         ID_, REV_, TYPE_, USER_ID_, GROUP_ID_, TASK_ID_, PROC_INST_ID_
                     ) VALUES ($1, 1, $2, $3, $4, $5, $6)
                 `
-                await client.query(sql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
+                await client.query(pgInsertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            sql = `
+            const pgSelectVarSql = `
                 SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
             `
-            const varResult = await client.query(sql, [instanceId])
+            const varResult = await client.query(pgSelectVarSql, [instanceId])
             const varRows = varResult.rows
             
             for (const v of varRows) {
                 const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
-                sql = `
+                const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
                         TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
                     ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
                 `
-                await client.query(sql, [
+                await client.query(pgInsertVarSql, [
                     varId, 
                     v.name, 
                     varType, 
@@ -1675,25 +1907,25 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             // 删除目标任务之后的历史
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
-                sql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
-                await client.query(sql, taskIdsToDelete)
+                const pgDelActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE TASK_ID_ IN (${placeholders})`
+                await client.query(pgDelActInstSql, taskIdsToDelete)
                 
-                sql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
-                await client.query(sql, taskIdsToDelete)
+                const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
+                await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
             
-            sql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
-            await client.query(sql, [instanceId])
+            const pgDelAllActInstSql = `DELETE FROM ACT_HI_ACTINST WHERE PROC_INST_ID_ = $1`
+            await client.query(pgDelAllActInstSql, [instanceId])
             
-            sql = `
+            const pgUpdateTaskSql = `
                 UPDATE ACT_HI_TASKINST 
                 SET END_TIME_ = NULL, DELETE_REASON_ = NULL
                 WHERE ID_ = $1
             `
-            await client.query(sql, [targetTaskId])
+            await client.query(pgUpdateTaskSql, [targetTaskId])
             
-            sql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
-            await client.query(sql, [instanceId])
+            const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
+            await client.query(pgUpdateProcInstSql, [instanceId])
             
             await client.query('COMMIT')
         } catch (error) {
@@ -1805,33 +2037,12 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
 }
 
 async function getUsers(dbType, keyword = '') {
-    const now = Date.now()
-    
-    if (cachedUsers && now - cacheTimestamp < CACHE_DURATION) {
-        if (keyword) {
-            return cachedUsers.filter(u => 
-                u.username.toLowerCase().includes(keyword.toLowerCase()) ||
-                u.realname.toLowerCase().includes(keyword.toLowerCase())
-            )
-        }
-        return cachedUsers
-    }
-    
-    let sql
-    if (dbType === 'mysql') {
-        if (keyword) {
-            sql = `SELECT id, username, realname FROM sys_user WHERE username LIKE ? OR realname LIKE ? ORDER BY username`
-            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
-            cachedUsers = rows
-        } else {
+    // 优先加载完整用户列表
+    if (!cachedUsers) {
+        let sql
+        if (dbType === 'mysql') {
             sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
             const rows = await query(activitiDb, dbType, sql, [])
-            cachedUsers = rows
-        }
-    } else {
-        if (keyword) {
-            sql = `SELECT id, username, realname FROM sys_user WHERE username ILIKE $1 OR realname ILIKE $2 ORDER BY username`
-            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
             cachedUsers = rows
         } else {
             sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
@@ -1840,7 +2051,13 @@ async function getUsers(dbType, keyword = '') {
         }
     }
     
-    cacheTimestamp = now
+    // 缓存中有数据，直接过滤返回
+    if (keyword) {
+        return cachedUsers.filter(u => 
+            u.username.toLowerCase().includes(keyword.toLowerCase()) ||
+            u.realname.toLowerCase().includes(keyword.toLowerCase())
+        )
+    }
     return cachedUsers
 }
 
