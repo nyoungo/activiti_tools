@@ -931,8 +931,8 @@ async function getUsers(keyword = '') {
     // 缓存中有数据，直接过滤返回
     if (keyword) {
         return cachedUsers.filter(u => 
-            u.username.toLowerCase().includes(keyword.toLowerCase()) ||
-            u.realname.toLowerCase().includes(keyword.toLowerCase())
+            (u.username && u.username.toLowerCase().includes(keyword.toLowerCase())) ||
+            (u.realname && u.realname.toLowerCase().includes(keyword.toLowerCase()))
         )
     }
     return cachedUsers
