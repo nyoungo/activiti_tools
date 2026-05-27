@@ -24,10 +24,8 @@ let activitiDb = null
 let dbConfig = null
 let localDb = null
 
-// 用户缓存
+// 用户缓存 - 本次连接一直缓存
 let cachedUsers = null
-let cacheTimestamp = 0
-const CACHE_DURATION = 300000 // 5分钟缓存
 
 app.use(cors())
 app.use(express.json())
@@ -882,52 +880,75 @@ async function getProcessVariables(db, dbType, instanceId) {
 }
 
 async function setProcessVariable(db, dbType, instanceId, variable) {
+    // 1. 先删除运行时变量
     let deleteSql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    if (dbType === 'postgres') {
-        deleteSql = deleteSql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
     await query(db, dbType, deleteSql, [instanceId, variable.name])
     
-    let insertSql
-    let params
+    // 2. 删除历史变量
+    let deleteHiSql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+    await query(db, dbType, deleteHiSql, [instanceId, variable.name])
+    
+    // 3. 插入运行时变量
+    let insertRuSql, ruParams
+    let insertHiSql, hiParams
     
     if (dbType === 'mysql') {
-        insertSql = `
+        insertRuSql = `
             INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
             VALUES (UUID(), ?, ?, ?, ?, ?, ?)
         `
-        params = [instanceId, variable.name, variable.type]
-    } else {
-        insertSql = `
-            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
-            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+        ruParams = [instanceId, variable.name, variable.type]
+        
+        insertHiSql = `
+            INSERT INTO ACT_HI_VARINST (ID_, PROC_INST_ID_, NAME_, VAR_TYPE_, TEXT_, DOUBLE_, LONG_)
+            VALUES (UUID(), ?, ?, ?, ?, ?, ?)
         `
-        params = [instanceId, variable.name, variable.type]
+        hiParams = [instanceId, variable.name, variable.type]
+    } else {
+        insertRuSql = `
+            INSERT INTO ACT_RU_VARIABLE (ID_, PROC_INST_ID_, NAME_, TYPE_, TEXT_, DOUBLE_, LONG_)
+            VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
+        `
+        ruParams = [instanceId, variable.name, variable.type]
+        
+        insertHiSql = `
+            INSERT INTO ACT_HI_VARINST (ID_, PROC_INST_ID_, NAME_, VAR_TYPE_, TEXT_, DOUBLE_, LONG_)
+            VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
+        `
+        hiParams = [instanceId, variable.name, variable.type]
     }
     
+    // 设置值
     switch (variable.type) {
         case 'string':
-            params.push(variable.value, null, null)
+            ruParams.push(variable.value, null, null)
+            hiParams.push(variable.value, null, null)
             break
         case 'long':
-            params.push(null, null, parseInt(variable.value))
+            ruParams.push(null, null, parseInt(variable.value))
+            hiParams.push(null, null, parseInt(variable.value))
             break
         case 'double':
-            params.push(null, parseFloat(variable.value), null)
+            ruParams.push(null, parseFloat(variable.value), null)
+            hiParams.push(null, parseFloat(variable.value), null)
             break
         default:
-            params.push(String(variable.value), null, null)
+            ruParams.push(String(variable.value), null, null)
+            hiParams.push(String(variable.value), null, null)
     }
     
-    await query(db, dbType, insertSql, params)
+    await query(db, dbType, insertRuSql, ruParams)
+    await query(db, dbType, insertHiSql, hiParams)
 }
 
 async function deleteProcessVariable(db, dbType, instanceId, name) {
+    // 删除运行时变量
     let sql = 'DELETE FROM ACT_RU_VARIABLE WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
-    if (dbType === 'postgres') {
-        sql = sql.replace(/\?/g, (_, i) => `$${i + 1}`)
-    }
     await query(db, dbType, sql, [instanceId, name])
+    
+    // 删除历史变量
+    let hiSql = 'DELETE FROM ACT_HI_VARINST WHERE PROC_INST_ID_ = ? AND NAME_ = ?'
+    await query(db, dbType, hiSql, [instanceId, name])
 }
 
 async function getProcessDefinitions(db, dbType) {
@@ -1805,33 +1826,12 @@ async function getTaskIdentityLinks(db, dbType, taskId) {
 }
 
 async function getUsers(dbType, keyword = '') {
-    const now = Date.now()
-    
-    if (cachedUsers && now - cacheTimestamp < CACHE_DURATION) {
-        if (keyword) {
-            return cachedUsers.filter(u => 
-                u.username.toLowerCase().includes(keyword.toLowerCase()) ||
-                u.realname.toLowerCase().includes(keyword.toLowerCase())
-            )
-        }
-        return cachedUsers
-    }
-    
-    let sql
-    if (dbType === 'mysql') {
-        if (keyword) {
-            sql = `SELECT id, username, realname FROM sys_user WHERE username LIKE ? OR realname LIKE ? ORDER BY username`
-            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
-            cachedUsers = rows
-        } else {
+    // 优先加载完整用户列表
+    if (!cachedUsers) {
+        let sql
+        if (dbType === 'mysql') {
             sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
             const rows = await query(activitiDb, dbType, sql, [])
-            cachedUsers = rows
-        }
-    } else {
-        if (keyword) {
-            sql = `SELECT id, username, realname FROM sys_user WHERE username ILIKE $1 OR realname ILIKE $2 ORDER BY username`
-            const rows = await query(activitiDb, dbType, sql, [`%${keyword}%`, `%${keyword}%`])
             cachedUsers = rows
         } else {
             sql = `SELECT id, username, realname FROM sys_user ORDER BY username`
@@ -1840,7 +1840,13 @@ async function getUsers(dbType, keyword = '') {
         }
     }
     
-    cacheTimestamp = now
+    // 缓存中有数据，直接过滤返回
+    if (keyword) {
+        return cachedUsers.filter(u => 
+            u.username.toLowerCase().includes(keyword.toLowerCase()) ||
+            u.realname.toLowerCase().includes(keyword.toLowerCase())
+        )
+    }
     return cachedUsers
 }
 

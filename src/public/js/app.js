@@ -746,28 +746,24 @@ function closeXmlModal() {
     elements.xmlModal.classList.remove('show')
 }
 
-// 用户缓存
+// 用户缓存 - 本次连接一直缓存
 let cachedUsers = []
-let cacheTimestamp = 0
-const USER_CACHE_DURATION = 300000
 
 async function getUsers(keyword = '') {
-    const now = Date.now()
-    
-    if (cachedUsers.length > 0 && now - cacheTimestamp < USER_CACHE_DURATION) {
-        if (keyword) {
-            return cachedUsers.filter(u => 
-                u.username.toLowerCase().includes(keyword.toLowerCase()) ||
-                u.realname.toLowerCase().includes(keyword.toLowerCase())
-            )
-        }
-        return cachedUsers
+    // 优先加载完整用户列表
+    if (cachedUsers.length === 0) {
+        const users = await api.get(`/api/users`)
+        cachedUsers = users
     }
     
-    const users = await api.get(`/api/users?keyword=${encodeURIComponent(keyword)}`)
-    cachedUsers = users
-    cacheTimestamp = now
-    return users
+    // 缓存中有数据，直接过滤返回
+    if (keyword) {
+        return cachedUsers.filter(u => 
+            u.username.toLowerCase().includes(keyword.toLowerCase()) ||
+            u.realname.toLowerCase().includes(keyword.toLowerCase())
+        )
+    }
+    return cachedUsers
 }
 
 async function searchUsers(input, callback) {
