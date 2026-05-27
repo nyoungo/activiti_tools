@@ -151,6 +151,94 @@ app.delete('/api/connections/:id', (req, res) => {
     res.json({ success: true })
 })
 
+app.post('/api/test-basic-connection', async (req, res) => {
+    const config = req.body
+    let conn
+    try {
+        if (config.dbType === 'mysql') {
+            conn = await mysql.createConnection({
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password
+            })
+            await conn.ping()
+            // 获取所有数据库
+            const [rows] = await conn.execute('SHOW DATABASES')
+            const databases = rows
+                .map(row => Object.values(row)[0])
+                .filter(db => !['information_schema', 'performance_schema', 'mysql', 'sys', 'test'].includes(db))
+            
+            res.json({ success: true, databases })
+        } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+            const poolConfig = {
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: 'postgres'
+            }
+            conn = new Pool(poolConfig)
+            await conn.query('SELECT 1')
+            
+            // 获取所有数据库
+            const dbResult = await conn.query(`
+                SELECT datname 
+                FROM pg_database 
+                WHERE datistemplate = false 
+                ORDER BY datname
+            `)
+            const databases = dbResult.rows.map(row => row.datname)
+            
+            res.json({ success: true, databases })
+        }
+    } catch (error) {
+        res.json({ success: false, message: error.message })
+    } finally {
+        if (conn) {
+            if (config.dbType === 'mysql') await conn.end()
+            else await conn.end()
+        }
+    }
+})
+
+app.post('/api/get-schemas', async (req, res) => {
+    const config = req.body
+    let conn
+    try {
+        if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+            const poolConfig = {
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: config.database
+            }
+            conn = new Pool(poolConfig)
+            await conn.query('SELECT 1')
+            
+            // 获取所有 schema
+            const schemaResult = await conn.query(`
+                SELECT schema_name 
+                FROM information_schema.schemata 
+                WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+                ORDER BY schema_name
+            `)
+            const schemas = schemaResult.rows.map(row => row.schema_name)
+            
+            res.json({ success: true, schemas })
+        } else {
+            res.json({ success: true, schemas: [] })
+        }
+    } catch (error) {
+        res.json({ success: false, message: error.message })
+    } finally {
+        if (conn) {
+            conn.end()
+        }
+    }
+})
+
 app.post('/api/connect', async (req, res) => {
     const config = req.body
     try {

@@ -50,16 +50,6 @@
                         </div>
                         <div class="form-row">
                             <div class="form-group">
-                                <label>数据库名</label>
-                                <input type="text" id="connDatabase" placeholder="activiti">
-                            </div>
-                            <div class="form-group">
-                                <label>模式名（PostgreSQL/瀚高）</label>
-                                <input type="text" id="connSchema" placeholder="public">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
                                 <label>用户名</label>
                                 <input type="text" id="connUsername" placeholder="root">
                             </div>
@@ -69,7 +59,23 @@
                             </div>
                         </div>
                         <div class="button-group">
-                            <button id="testConnection" class="btn btn-secondary">测试连接</button>
+                            <button id="testConnection" class="btn btn-secondary">获取数据库列表</button>
+                        </div>
+                        <div class="form-row" id="dbSelectionRow" style="display: none;">
+                            <div class="form-group">
+                                <label>数据库</label>
+                                <select id="connDatabase" disabled>
+                                    <option value="">请选择数据库...</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="schemaGroup">
+                                <label>模式（PostgreSQL/瀚高）</label>
+                                <select id="connSchema" disabled>
+                                    <option value="">请选择模式...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="button-group" id="connectBtnGroup" style="display: none;">
                             <button id="saveConnection" class="btn btn-secondary">保存配置</button>
                             <button id="connect" class="btn btn-primary">连接</button>
                         </div>

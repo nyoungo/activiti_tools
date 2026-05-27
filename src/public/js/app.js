@@ -73,6 +73,7 @@ const elements = {
 // 初始化
 async function init() {
     bindEvents()
+    resetDatabaseSelection()
     await checkConnectionStatus()
     await loadConnections()
 }
@@ -89,6 +90,8 @@ function bindEvents() {
         } else if (type === 'hgdatabase') {
             elements.connPort.value = '5866'
         }
+        // 重置数据库选择
+        resetDatabaseSelection()
     })
 
     // 已保存的配置
@@ -101,8 +104,11 @@ function bindEvents() {
     // 删除配置
     elements.deleteConnection.addEventListener('click', deleteCurrentConnection)
 
-    // 测试连接
-    elements.testConnection.addEventListener('click', testConnection)
+    // 获取数据库列表
+    elements.testConnection.addEventListener('click', getDatabaseList)
+
+    // 数据库选择变化
+    elements.connDatabase.addEventListener('change', onDatabaseSelect)
 
     // 保存配置
     elements.saveConnection.addEventListener('click', saveConnection)
@@ -192,7 +198,7 @@ async function loadConnections() {
 }
 
 // 加载指定配置
-function loadConnectionById(id) {
+async function loadConnectionById(id) {
     const option = elements.savedConnections.querySelector(`option[value="${id}"]`)
     if (option) {
         const config = JSON.parse(option.dataset.config)
@@ -200,10 +206,57 @@ function loadConnectionById(id) {
         elements.connType.value = config.db_type
         elements.connHost.value = config.host
         elements.connPort.value = config.port
-        elements.connDatabase.value = config.database
-        elements.connSchema.value = config.schema || ''
         elements.connUsername.value = config.username
         elements.connPassword.value = ''
+        
+        // 先获取数据库列表
+        const basicConfig = {
+            dbType: config.db_type,
+            host: config.host,
+            port: config.port,
+            username: config.username,
+            password: ''
+        }
+        
+        const result = await api.post('/api/test-basic-connection', basicConfig)
+        if (result.success) {
+            // 填充数据库列表
+            elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
+            result.databases.forEach(db => {
+                elements.connDatabase.innerHTML += `<option value="${db}" ${db === config.database ? 'selected' : ''}>${db}</option>`
+            })
+            elements.connDatabase.disabled = false
+            document.getElementById('dbSelectionRow').style.display = 'flex'
+            
+            // 如果是PG/瀚高，获取schema列表
+            if (config.db_type !== 'mysql' && config.database) {
+                const schemaConfig = {
+                    dbType: config.db_type,
+                    host: config.host,
+                    port: config.port,
+                    username: config.username,
+                    password: '',
+                    database: config.database
+                }
+                
+                const schemaResult = await api.post('/api/get-schemas', schemaConfig)
+                if (schemaResult.success) {
+                    elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
+                    schemaResult.schemas.forEach(schema => {
+                        elements.connSchema.innerHTML += `<option value="${schema}" ${schema === config.schema ? 'selected' : ''}>${schema}</option>`
+                    })
+                    elements.connSchema.disabled = false
+                }
+                
+                // 显示连接按钮
+                if (config.schema) {
+                    document.getElementById('connectBtnGroup').style.display = 'flex'
+                }
+            } else {
+                // MySQL直接显示连接按钮
+                document.getElementById('connectBtnGroup').style.display = 'flex'
+            }
+        }
     }
 }
 
@@ -230,12 +283,105 @@ function showMessage(element, text, type = 'success') {
     }, 3000)
 }
 
-// 测试连接
-async function testConnection() {
-    const config = getConnectionConfig()
-    const result = await api.post('/api/test-connection', config)
-    showMessage(elements.connectionMessage, result.message, result.success ? 'success' : 'error')
+// 重置数据库选择
+function resetDatabaseSelection() {
+    elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
+    elements.connDatabase.disabled = true
+    elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
+    elements.connSchema.disabled = true
+    document.getElementById('dbSelectionRow').style.display = 'none'
+    document.getElementById('connectBtnGroup').style.display = 'none'
+    
+    // 根据数据库类型显示/隐藏schema
+    const dbType = elements.connType.value
+    const schemaGroup = document.getElementById('schemaGroup')
+    if (dbType === 'mysql') {
+        schemaGroup.style.display = 'none'
+    } else {
+        schemaGroup.style.display = 'block'
+    }
 }
+
+// 获取数据库列表
+async function getDatabaseList() {
+    const config = getConnectionConfig()
+    // 只传基本连接信息，不传database和schema
+    const basicConfig = {
+        dbType: config.dbType,
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        password: config.password
+    }
+    
+    const result = await api.post('/api/test-basic-connection', basicConfig)
+    if (result.success) {
+        // 填充数据库列表
+        elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
+        result.databases.forEach(db => {
+            elements.connDatabase.innerHTML += `<option value="${db}">${db}</option>`
+        })
+        elements.connDatabase.disabled = false
+        document.getElementById('dbSelectionRow').style.display = 'flex'
+        showMessage(elements.connectionMessage, '连接成功，请选择数据库', 'success')
+    } else {
+        showMessage(elements.connectionMessage, result.message, 'error')
+        resetDatabaseSelection()
+    }
+}
+
+// 选择数据库后获取schema列表
+async function onDatabaseSelect() {
+    const selectedDb = elements.connDatabase.value
+    if (!selectedDb) {
+        elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
+        elements.connSchema.disabled = true
+        document.getElementById('connectBtnGroup').style.display = 'none'
+        return
+    }
+    
+    const dbType = elements.connType.value
+    if (dbType === 'mysql') {
+        // MySQL不需要schema
+        document.getElementById('connectBtnGroup').style.display = 'flex'
+        return
+    }
+    
+    // PostgreSQL/瀚高获取schema列表
+    const config = getConnectionConfig()
+    const schemaConfig = {
+        dbType: config.dbType,
+        host: config.host,
+        port: config.port,
+        username: config.username,
+        password: config.password,
+        database: selectedDb
+    }
+    
+    const result = await api.post('/api/get-schemas', schemaConfig)
+    if (result.success) {
+        elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
+        result.schemas.forEach(schema => {
+            elements.connSchema.innerHTML += `<option value="${schema}">${schema}</option>`
+        })
+        elements.connSchema.disabled = false
+        showMessage(elements.connectionMessage, '请选择模式', 'success')
+    } else {
+        showMessage(elements.connectionMessage, result.message, 'error')
+    }
+}
+
+// 监听schema变化
+document.addEventListener('DOMContentLoaded', () => {
+    const connSchema = document.getElementById('connSchema')
+    connSchema.addEventListener('change', () => {
+        if (connSchema.value) {
+            document.getElementById('connectBtnGroup').style.display = 'flex'
+        } else {
+            document.getElementById('connectBtnGroup').style.display = 'none'
+        }
+    })
+})
 
 // 保存配置
 async function saveConnection() {
