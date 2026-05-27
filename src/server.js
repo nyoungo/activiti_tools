@@ -1578,9 +1578,11 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            // 9. 恢复变量
+            // 9. 恢复变量 - 从 ACT_HI_VARINST 完整恢复所有字段
             const selectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, 
+                    DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1588,20 +1590,22 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
                 await db.execute(insertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -1745,7 +1749,9 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             const pgSelectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, 
+                    DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -1754,20 +1760,22 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             const varRows = varResult.rows
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `
                 await client.query(pgInsertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -1952,9 +1960,11 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 await db.execute(insertLinkSql, [linkId, link.type, link.userId, link.groupId, targetTaskId, instanceId])
             }
             
-            // 8. 恢复变量
+            // 8. 恢复变量 - 从 ACT_HI_VARINST 完整恢复所有字段
             const selectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as \`text\`, TEXT2_ as text2, 
+                    DOUBLE_ as \`double\`, LONG_ as \`long\`, BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = ? 
                   AND NAME_ IS NOT NULL
@@ -1962,20 +1972,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             const [varRows] = await db.execute(selectVarSql, [instanceId])
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const insertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `
                 await db.execute(insertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
@@ -2087,7 +2099,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             }
             
             const pgSelectVarSql = `
-                SELECT NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId
+                SELECT ID_ as id, NAME_ as name, VAR_TYPE_ as varType, TEXT_ as "text", TEXT2_ as text2, 
+                    DOUBLE_ as "double", LONG_ as "long", BYTEARRAY_ID_ as bytearrayId, 
+                    EXECUTION_ID_ as executionId, TASK_ID_ as taskId, REV_ as rev
                 FROM ACT_HI_VARINST
                 WHERE PROC_INST_ID_ = $1
                   AND NAME_ IS NOT NULL
@@ -2096,20 +2110,22 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             const varRows = varResult.rows
             
             for (const v of varRows) {
-                const varId = `var_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
                 const varType = v.varType || 'string'
                 
                 const pgInsertVarSql = `
                     INSERT INTO ACT_RU_VARIABLE (
                         ID_, REV_, NAME_, TYPE_, PROC_INST_ID_,
-                        TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
-                    ) VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        EXECUTION_ID_, TASK_ID_, TEXT_, TEXT2_, DOUBLE_, LONG_, BYTEARRAY_ID_
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `
                 await client.query(pgInsertVarSql, [
-                    varId, 
+                    v.id, 
+                    v.rev || 1, 
                     v.name, 
                     varType, 
                     instanceId, 
+                    v.executionId, 
+                    v.taskId,
                     v.text, 
                     v.text2, 
                     v.double, 
