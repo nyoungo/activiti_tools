@@ -1618,9 +1618,6 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
                 
-                // 10.1 删除历史评论（根据taskid删除）
-                await db.execute(`DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
-                
                 // 10.2 删除历史身份关联（包括candidate类型）
                 await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
                 
@@ -1632,6 +1629,9 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await db.execute(delTaskInstSql, taskIdsToDelete)
             }
+            
+            // 10.1 删除历史评论（包括目标任务和之后的任务）
+            await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
             
             // 11. 更新目标历史任务，清除结束时间和审批人
             const updateTaskSql = `
@@ -1792,10 +1792,6 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
                 
-                // 9.1 删除历史评论（根据taskid删除）
-                const pgDelCommentSql = `DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`
-                await client.query(pgDelCommentSql, taskIdsToDelete)
-                
                 // 9.2 删除历史身份关联（包括candidate类型）
                 const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelIdentitySql, taskIdsToDelete)
@@ -1808,6 +1804,9 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
+            
+            // 9.1 删除历史评论（包括目标任务和之后的任务）
+            await client.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
             
             // 10. 更新目标历史任务，清除结束时间和审批人
             const pgUpdateTaskSql = `
@@ -2016,9 +2015,6 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map(() => '?').join(',')
                 
-                // 9.1 删除历史评论（根据taskid删除）
-                await db.execute(`DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
-                
                 // 9.2 删除历史身份关联（包括candidate类型）
                 await db.execute(`DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`, taskIdsToDelete)
                 
@@ -2030,6 +2026,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 const delTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await db.execute(delTaskInstSql, taskIdsToDelete)
             }
+            
+            // 9.1 删除历史评论（包括目标任务和之后的任务）
+            await db.execute('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = ?', [instanceId])
             
             // 10. 更新目标历史任务，清除结束时间和审批人
             const updateTaskSql = `
@@ -2166,10 +2165,6 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             if (taskIdsToDelete.length > 0) {
                 const placeholders = taskIdsToDelete.map((_, i) => `$${i + 1}`).join(',')
                 
-                // 删除历史评论（根据taskid删除）
-                const pgDelCommentSql = `DELETE FROM ACT_HI_COMMENT WHERE TASK_ID_ IN (${placeholders})`
-                await client.query(pgDelCommentSql, taskIdsToDelete)
-                
                 // 删除历史身份关联（包括candidate类型）
                 const pgDelIdentitySql = `DELETE FROM ACT_HI_IDENTITYLINK WHERE TASK_ID_ IN (${placeholders})`
                 await client.query(pgDelIdentitySql, taskIdsToDelete)
@@ -2182,6 +2177,9 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 const pgDelTaskInstSql = `DELETE FROM ACT_HI_TASKINST WHERE ID_ IN (${placeholders})`
                 await client.query(pgDelTaskInstSql, taskIdsToDelete)
             }
+            
+            // 删除历史评论（包括目标任务和之后的任务）
+            await client.query('DELETE FROM ACT_HI_COMMENT WHERE PROC_INST_ID_ = $1', [instanceId])
             
             // 更新目标历史任务，清除结束时间和审批人
             const pgUpdateTaskSql = `
