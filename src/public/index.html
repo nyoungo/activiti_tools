@@ -19,10 +19,12 @@
                     <div class="connection-form">
                         <div class="form-group">
                             <label>已保存的配置</label>
-                            <select id="savedConnections">
-                                <option value="">-- 选择配置 --</option>
-                            </select>
-                            <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none;">删除</button>
+                            <div style="display: flex; gap: 12px; align-items: center;">
+                                <select id="savedConnections" style="flex: 1;">
+                                    <option value="">-- 选择配置 --</option>
+                                </select>
+                                <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none; flex-shrink: 0;">删除</button>
+                            </div>
                         </div>
                         <div class="form-row">
                             <div class="form-group">

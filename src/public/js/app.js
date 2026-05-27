@@ -136,11 +136,7 @@ function bindEvents() {
             if (modal) modal.classList.remove('show')
         })
     })
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.classList.remove('show')
-        })
-    })
+
 
     // 标签页切换
     document.querySelectorAll('.tab-btn').forEach(btn => {
