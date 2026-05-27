@@ -151,6 +151,94 @@ app.delete('/api/connections/:id', (req, res) => {
     res.json({ success: true })
 })
 
+app.post('/api/test-basic-connection', async (req, res) => {
+    const config = req.body
+    let conn
+    try {
+        if (config.dbType === 'mysql') {
+            conn = await mysql.createConnection({
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password
+            })
+            await conn.ping()
+            // 获取所有数据库
+            const [rows] = await conn.execute('SHOW DATABASES')
+            const databases = rows
+                .map(row => Object.values(row)[0])
+                .filter(db => !['information_schema', 'performance_schema', 'mysql', 'sys', 'test'].includes(db))
+            
+            res.json({ success: true, databases })
+        } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+            const poolConfig = {
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: 'postgres'
+            }
+            conn = new Pool(poolConfig)
+            await conn.query('SELECT 1')
+            
+            // 获取所有数据库
+            const dbResult = await conn.query(`
+                SELECT datname 
+                FROM pg_database 
+                WHERE datistemplate = false 
+                ORDER BY datname
+            `)
+            const databases = dbResult.rows.map(row => row.datname)
+            
+            res.json({ success: true, databases })
+        }
+    } catch (error) {
+        res.json({ success: false, message: error.message })
+    } finally {
+        if (conn) {
+            if (config.dbType === 'mysql') await conn.end()
+            else await conn.end()
+        }
+    }
+})
+
+app.post('/api/get-schemas', async (req, res) => {
+    const config = req.body
+    let conn
+    try {
+        if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
+            const poolConfig = {
+                host: config.host,
+                port: config.port,
+                user: config.username,
+                password: config.password,
+                database: config.database
+            }
+            conn = new Pool(poolConfig)
+            await conn.query('SELECT 1')
+            
+            // 获取所有 schema
+            const schemaResult = await conn.query(`
+                SELECT schema_name 
+                FROM information_schema.schemata 
+                WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+                ORDER BY schema_name
+            `)
+            const schemas = schemaResult.rows.map(row => row.schema_name)
+            
+            res.json({ success: true, schemas })
+        } else {
+            res.json({ success: true, schemas: [] })
+        }
+    } catch (error) {
+        res.json({ success: false, message: error.message })
+    } finally {
+        if (conn) {
+            conn.end()
+        }
+    }
+})
+
 app.post('/api/connect', async (req, res) => {
     const config = req.body
     try {
@@ -482,6 +570,15 @@ async function testConnection(config) {
                 database: config.database
             })
             await conn.ping()
+            
+            // 验证 Activiti 表是否存在
+            const [tables] = await conn.execute(
+                'SHOW TABLES LIKE ?', 
+                ['ACT_HI_PROCINST']
+            )
+            if (!tables || tables.length === 0) {
+                throw new Error('连接成功，但未找到 Activiti 工作流相关表，请检查数据库名称是否正确')
+            }
         } else if (config.dbType === 'postgres' || config.dbType === 'hgdatabase') {
             const poolConfig = {
                 host: config.host,
@@ -495,6 +592,24 @@ async function testConnection(config) {
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
+            
+            // 验证 Activiti 表是否存在
+            const tableCheckQuery = config.schema 
+                ? `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'act_hi_procinst')`
+                : `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'act_hi_procinst')`
+            
+            const params = config.schema ? [config.schema] : []
+            const result = await conn.query(tableCheckQuery, params)
+            
+            const tableExists = result.rows && result.rows[0] && Object.values(result.rows[0])[0]
+            
+            if (!tableExists) {
+                if (config.schema) {
+                    throw new Error(`连接成功，但在 schema "${config.schema}" 中未找到 Activiti 工作流相关表，请检查 schema 名称是否正确`)
+                } else {
+                    throw new Error('连接成功，但未找到 Activiti 工作流相关表，请检查数据库名称是否正确，或填写正确的 schema 名称')
+                }
+            }
         }
     } finally {
         if (conn) {
