@@ -662,7 +662,10 @@ function updateVariableType(name, type) {
 // 保存变量
 async function saveVariable(name) {
     const type = document.querySelector(`#variableTableBody tr[data-name="${name}"] select`).value
-    const value = document.getElementById(`var-${name}`).value
+    let value = document.getElementById(`var-${name}`).value
+    
+    // 反转义 HTML 实体，确保保存原始值
+    value = value.replace(/&quot;/g, '"').replace(/\\n/g, '\n')
 
     await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
     alert('变量保存成功')
