@@ -176,7 +176,7 @@ app.post('/api/test-basic-connection', async (req, res) => {
                 port: config.port,
                 user: config.username,
                 password: config.password,
-                database: 'postgres'
+                database: config.dbType === 'hgdatabase' ? 'highgo' : 'postgres'
             }
             conn = new Pool(poolConfig)
             await conn.query('SELECT 1')
