@@ -157,9 +157,12 @@
                 </div>
                 <div class="form-group">
                     <label>设置审批人</label>
-                    <div class="user-selector">
-                        <input type="text" id="newAssignee" placeholder="搜索或选择用户..." onkeyup="searchUsers(this)">
-                        <div class="user-dropdown" style="display: none;"></div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <div class="user-selector" style="flex: 1;">
+                            <input type="text" id="newAssignee" placeholder="搜索或选择用户..." onkeyup="searchUsers(this)">
+                            <div class="user-dropdown" style="display: none;"></div>
+                        </div>
+                        <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
                     </div>
                     <small>设置单个审批人，将替换当前审批人</small>
                 </div>
@@ -175,16 +178,13 @@
                             <option value="assignee">审批人</option>
                         </select>
                         <button class="btn btn-small btn-secondary" onclick="addCandidate()" style="flex: 1;">添加</button>
+                        <button class="btn btn-small btn-secondary" onclick="refreshTaskInfo()">刷新</button>
                     </div>
                     <small>添加多审批人（IdentityLink）</small>
                 </div>
                 <div class="form-group">
                     <label>当前候选人/审批人</label>
                     <div id="identityLinkList" style="max-height: 200px; overflow-y: auto;"></div>
-                </div>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
-                    <button class="btn btn-secondary" onclick="refreshTaskInfo()">刷新</button>
                 </div>
             </div>
         </div>
