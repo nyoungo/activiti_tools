@@ -1816,13 +1816,13 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await client.query(pgUpdateTaskSql, [targetTaskId, instanceId])
             
-            // 11. 更新目标历史活动，清除结束时间
+            // 11. 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
             const pgUpdateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = $2
                 WHERE TASK_ID_ = $1
             `
-            await client.query(pgUpdateActInstSql, [targetTaskId])
+            await client.query(pgUpdateActInstSql, [targetTaskId, instanceId])
             
             const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
             await client.query(pgUpdateProcInstSql, [instanceId])
@@ -2038,13 +2038,13 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await db.execute(updateTaskSql, [instanceId, targetTaskId])
             
-            // 11. 更新目标历史活动，清除结束时间
+            // 11. 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
             const updateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = ?
                 WHERE TASK_ID_ = ?
             `
-            await db.execute(updateActInstSql, [targetTaskId])
+            await db.execute(updateActInstSql, [instanceId, targetTaskId])
             
             // 13. 更新历史流程实例
             const updateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = ?`
@@ -2189,13 +2189,13 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             `
             await client.query(pgUpdateTaskSql, [targetTaskId, instanceId])
             
-            // 更新目标历史活动，清除结束时间
+            // 更新目标历史活动，清除结束时间，execution_id_与proc_inst_id_一致
             const pgUpdateActInstSql = `
                 UPDATE ACT_HI_ACTINST 
-                SET END_TIME_ = NULL, DELETE_REASON_ = NULL
+                SET END_TIME_ = NULL, DELETE_REASON_ = NULL, EXECUTION_ID_ = $2
                 WHERE TASK_ID_ = $1
             `
-            await client.query(pgUpdateActInstSql, [targetTaskId])
+            await client.query(pgUpdateActInstSql, [targetTaskId, instanceId])
             
             const pgUpdateProcInstSql = `UPDATE ACT_HI_PROCINST SET END_TIME_ = NULL WHERE ID_ = $1`
             await client.query(pgUpdateProcInstSql, [instanceId])
