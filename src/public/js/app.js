@@ -580,7 +580,17 @@ async function openAssigneeModal(taskId, taskName, currentAssignee) {
     elements.assigneeTaskName.value = taskName
     elements.currentAssignee.value = currentAssignee || '无'
     elements.newAssignee.value = ''
+    elements.newAssignee.removeAttribute('data-username')
+    elements.newAssignee.removeAttribute('data-realname')
     elements.candidateUserId.value = ''
+    elements.candidateUserId.removeAttribute('data-username')
+    elements.candidateUserId.removeAttribute('data-realname')
+    
+    // 清空下拉菜单
+    const assigneeDropdown = elements.newAssignee.nextElementSibling
+    if (assigneeDropdown) assigneeDropdown.style.display = 'none'
+    const candidateDropdown = elements.candidateUserId.nextElementSibling
+    if (candidateDropdown) candidateDropdown.style.display = 'none'
 
     await loadIdentityLinks(taskId)
     elements.assigneeModal.classList.add('show')
@@ -608,7 +618,7 @@ async function saveAssignee() {
     const newAssignee = elements.newAssignee.value.trim()
 
     if (!newAssignee) {
-        alert('请输入审批人ID')
+        alert('请选择或输入审批人ID')
         return
     }
 
@@ -618,6 +628,10 @@ async function saveAssignee() {
         alert('审批人设置成功')
         elements.currentAssignee.value = newAssignee
         elements.newAssignee.value = ''
+        elements.newAssignee.removeAttribute('data-username')
+        elements.newAssignee.removeAttribute('data-realname')
+        const dropdown = elements.newAssignee.nextElementSibling
+        if (dropdown) dropdown.style.display = 'none'
         await loadIdentityLinks(currentTaskId)
         showInstanceDetail(state.currentInstanceId)
     } else {
@@ -630,7 +644,7 @@ async function addCandidate() {
     const type = elements.candidateType.value
 
     if (!userId) {
-        alert('请输入用户ID')
+        alert('请选择或输入用户ID')
         return
     }
 
@@ -639,6 +653,10 @@ async function addCandidate() {
     if (result.success) {
         alert('添加成功')
         elements.candidateUserId.value = ''
+        elements.candidateUserId.removeAttribute('data-username')
+        elements.candidateUserId.removeAttribute('data-realname')
+        const dropdown = elements.candidateUserId.nextElementSibling
+        if (dropdown) dropdown.style.display = 'none'
         await loadIdentityLinks(currentTaskId)
     } else {
         alert('添加失败: ' + result.error)

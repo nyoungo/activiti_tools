@@ -2062,16 +2062,31 @@ async function getUsers(dbType, keyword = '') {
 }
 
 async function updateHistoryTaskAssignee(db, dbType, taskId, assignee, endTime) {
+    // 统一转换日期格式
+    let formattedDate = null
+    if (endTime) {
+        const date = new Date(endTime)
+        if (!isNaN(date.getTime())) {
+            if (dbType === 'mysql') {
+                // MySQL格式: YYYY-MM-DD HH:mm:ss
+                formattedDate = date.toISOString().replace('T', ' ').substring(0, 19)
+            } else {
+                // PostgreSQL/瀚高可以直接用 Date 对象或 ISO 格式
+                formattedDate = date
+            }
+        }
+    }
+    
     let sql
     if (dbType === 'mysql') {
         sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = ?, END_TIME_ = ? WHERE ID_ = ?'
-        await db.execute(sql, [assignee, endTime, taskId])
+        await db.execute(sql, [assignee, formattedDate, taskId])
         
         sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = ? WHERE TASK_ID_ = ? AND TYPE_ = \'assignee\''
         await db.execute(sql, [assignee, taskId])
     } else {
         sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = $1, END_TIME_ = $2 WHERE ID_ = $3'
-        await db.query(sql, [assignee, endTime, taskId])
+        await db.query(sql, [assignee, formattedDate, taskId])
         
         sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = $1 WHERE TASK_ID_ = $2 AND TYPE_ = $3'
         await db.query(sql, [assignee, taskId, 'assignee'])
