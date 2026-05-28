@@ -1032,8 +1032,14 @@ function openEditHistoryTaskModal(taskId, taskName, assignee, endTime) {
 async function saveHistoryTaskEdit() {
     if (!currentHistoryTaskId) return
     
+    const taskName = document.getElementById('editHistoryTaskName').value
     const assignee = document.getElementById('editHistoryAssignee').value
     const endTime = document.getElementById('editHistoryEndTime').value
+    
+    if (!taskName) {
+        alert('请输入任务名称')
+        return
+    }
     
     if (!assignee) {
         alert('请选择审批人')
@@ -1041,6 +1047,7 @@ async function saveHistoryTaskEdit() {
     }
     
     const result = await api.put(`/api/history-tasks/${currentHistoryTaskId}/assignee`, {
+        taskName,
         assignee,
         endTime: endTime ? new Date(endTime).toISOString() : null
     })

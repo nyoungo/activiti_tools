@@ -53,147 +53,95 @@
                         <div class="form-row">
                             <div class="form-group">
                                 <label>用户名</label>
-                                <input type="text" id="connUsername" placeholder="root">
+                                <input type="text" id="connUser" placeholder="root">
                             </div>
                             <div class="form-group">
                                 <label>密码</label>
-                                <input type="password" id="connPassword" placeholder="password">
+                                <input type="password" id="connPass" placeholder="密码">
                             </div>
+                        </div>
+                        <div class="form-group" id="dbNameGroup">
+                            <label>数据库名称</label>
+                            <input type="text" id="connDbName" placeholder="activiti">
+                        </div>
+                        <div class="form-group" id="schemaGroup" style="display: none;">
+                            <label>Schema</label>
+                            <select id="connSchema">
+                                <option value="">-- 选择 Schema --</option>
+                            </select>
                         </div>
                         <div class="button-group">
-                            <button id="testConnection" class="btn btn-secondary">获取数据库列表</button>
+                            <button class="btn btn-secondary" onclick="testConnection()">测试连接</button>
+                            <button class="btn btn-primary" onclick="connectDatabase()">连接</button>
                         </div>
-                        <div class="form-row" id="dbSelectionRow" style="display: none;">
-                            <div class="form-group">
-                                <label>数据库</label>
-                                <select id="connDatabase" disabled>
-                                    <option value="">请选择数据库...</option>
-                                </select>
-                            </div>
-                            <div class="form-group" id="schemaGroup">
-                                <label>模式（PostgreSQL/瀚高）</label>
-                                <select id="connSchema" disabled>
-                                    <option value="">请选择模式...</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="button-group" id="connectBtnGroup" style="display: none;">
-                            <button id="saveConnection" class="btn btn-secondary">保存配置</button>
-                            <button id="connect" class="btn btn-primary">连接</button>
-                        </div>
-                        <div id="connectionMessage" class="message"></div>
                     </div>
                 </div>
             </section>
 
-            <!-- 流程实例页面 -->
-            <section id="page-instances" class="page">
+            <!-- 工作空间页面 -->
+            <section id="page-workspace" class="page">
                 <div class="page-header">
                     <h2>Activiti工作流维护工具</h2>
                     <div class="header-right">
-                        <div class="connection-status-simple">
-                            <span class="status-dot"></span>
-                            <span id="statusText">未连接</span>
-                            <button id="disconnect" class="btn btn-small btn-danger" style="display:none; margin-left: 10px;">断开连接</button>
-                        </div>
-                        <div class="search-box">
-                            <input type="text" id="searchKeyword" placeholder="搜索流程名称、Key或业务Key...">
-                            <button id="searchBtn" class="btn btn-primary">搜索</button>
-                        </div>
+                        <button class="btn btn-secondary btn-small" onclick="switchConnection()">切换数据库</button>
                     </div>
                 </div>
-
-                <!-- 流程实例标签页 -->
+                
+                <!-- 标签页导航 -->
                 <div class="tabs">
-                    <button class="tab-btn active" data-tab="running">运行中</button>
-                    <button class="tab-btn" data-tab="finished">已结束</button>
+                    <button class="tab-btn active" data-tab="tab-instances">流程实例</button>
+                    <button class="tab-btn" data-tab="tab-definitions">流程定义</button>
                 </div>
-
-                <div class="content-box">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>实例ID</th>
-                                <th>流程名称</th>
-                                <th>业务Key</th>
-                                <th>发起人</th>
-                                <th>开始时间</th>
-                                <th>状态</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="instancesTableBody">
-                            <tr><td colspan="7" class="text-center">请连接数据库</td></tr>
-                        </tbody>
-                    </table>
-                    <div class="pagination" id="pagination"></div>
+                
+                <!-- 流程实例标签页 -->
+                <div id="tab-instances" class="tab-content active">
+                    <div class="tab-header">
+                        <div class="tab-filters">
+                            <select id="instanceFilter" onchange="loadInstances()">
+                                <option value="running">运行中</option>
+                                <option value="finished">已结束</option>
+                                <option value="all">全部</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="instancesList" class="table-container"></div>
+                    <div id="instancesPagination" class="pagination"></div>
+                </div>
+                
+                <!-- 流程定义标签页 -->
+                <div id="tab-definitions" class="tab-content">
+                    <div class="tab-header">
+                        <div class="tab-filters">
+                            <input type="text" id="definitionSearch" placeholder="搜索流程定义..." onkeyup="loadDefinitions()">
+                        </div>
+                    </div>
+                    <div id="definitionsList" class="table-container"></div>
+                    <div id="definitionsPagination" class="pagination"></div>
                 </div>
             </section>
         </main>
     </div>
 
     <!-- 流程实例详情模态框 -->
-    <div id="instanceModal" class="modal">
-        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
+    <div id="instanceDetailModal" class="modal">
+        <div class="modal-content modal-large">
             <div class="modal-header">
                 <h3>流程实例详情</h3>
-                <button class="modal-close" onclick="closeInstanceModal()">&times;</button>
+                <button class="modal-close" onclick="closeInstanceDetail()">&times;</button>
             </div>
-            <div class="modal-body" id="instanceModalBody"></div>
+            <div class="modal-body" id="instanceDetailContent"></div>
         </div>
     </div>
 
-    <!-- 设置审批人模态框 -->
-    <div id="assigneeModal" class="modal">
-        <div class="modal-content">
+    <!-- 流程变量模态框 -->
+    <div id="variablesModal" class="modal">
+        <div class="modal-content modal-large">
             <div class="modal-header">
-                <h3>任务审批人设置</h3>
-                <button class="modal-close">&times;</button>
+                <h3>流程变量</h3>
+                <button class="modal-close" onclick="closeVariablesModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <label>任务ID</label>
-                    <input type="text" id="assigneeTaskId" readonly>
-                </div>
-                <div class="form-group">
-                    <label>任务名称</label>
-                    <input type="text" id="assigneeTaskName" readonly>
-                </div>
-                <div class="form-group">
-                    <label>当前审批人</label>
-                    <input type="text" id="currentAssignee" readonly>
-                </div>
-                <div class="form-group">
-                    <label>设置审批人</label>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <div class="user-selector" style="flex: 1;">
-                            <input type="text" id="newAssignee" placeholder="搜索或选择用户..." onkeyup="searchUsers(this)">
-                            <div class="user-dropdown" style="display: none;"></div>
-                        </div>
-                        <button class="btn btn-primary" onclick="saveAssignee()">保存审批人</button>
-                    </div>
-                    <small>设置单个审批人，将替换当前审批人</small>
-                </div>
-                <div class="form-group">
-                    <label>添加候选人</label>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <div class="user-selector" style="flex: 3;">
-                            <input type="text" id="candidateUserId" placeholder="搜索或选择用户..." onkeyup="searchUsers(this)">
-                            <div class="user-dropdown" style="display: none;"></div>
-                        </div>
-                        <select id="candidateType" style="flex: 2; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
-                            <option value="candidate">候选人</option>
-                            <option value="assignee">审批人</option>
-                        </select>
-                        <button class="btn btn-small btn-secondary" onclick="addCandidate()">添加</button>
-                        <button class="btn btn-small btn-secondary" onclick="refreshTaskInfo()">刷新</button>
-                    </div>
-                    <small>添加多审批人（IdentityLink）</small>
-                </div>
-                <div class="form-group">
-                    <label>当前候选人/审批人</label>
-                    <div id="identityLinkList" style="max-height: 200px; overflow-y: auto;"></div>
-                </div>
+                <div id="variablesList" class="table-container"></div>
             </div>
         </div>
     </div>
@@ -226,7 +174,7 @@
             <div class="modal-body">
                 <div class="form-group">
                     <label>任务名称</label>
-                    <input type="text" id="editHistoryTaskName" readonly>
+                    <input type="text" id="editHistoryTaskName">
                 </div>
                 <div class="form-group">
                     <label>审批人</label>
@@ -248,5 +196,10 @@
     </div>
 
     <script src="js/app.js"></script>
+    
+    <!-- 版权信息 -->
+    <footer class="footer">
+        <p>© 2026 Nyoung. All rights reserved.</p>
+    </footer>
 </body>
 </html>
