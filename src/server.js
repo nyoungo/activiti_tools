@@ -102,6 +102,89 @@ function saveLocalDb() {
     fs.writeFileSync(CONFIG_DB_PATH, buffer)
 }
 
+// 从 BPMN XML 中获取指定任务的 candidateGroups
+async function getCandidateGroupsFromBpmn(db, dbType, procDefId, taskDefKey) {
+    try {
+        let xmlSql
+        if (dbType === 'mysql') {
+            xmlSql = `SELECT RESOURCE_NAME_ as resourceName FROM ACT_RE_PROCDEF WHERE ID_ = ?`
+            const [rows] = await db.execute(xmlSql, [procDefId])
+            if (rows.length === 0) return null
+            const bpmnXml = rows[0].resourceName
+            if (!bpmnXml) return null
+            
+            // 使用正则表达式提取 candidateGroups 属性
+            // 匹配格式：<userTask ... candidateGroups="admin,manager" ...>
+            const regex = new RegExp(`<userTask[^>]*id="${taskDefKey}"[^>]*candidateGroups="([^"]+)"[^>]*>`, 'i')
+            const match = bpmnXml.match(regex)
+            if (match && match[1]) {
+                return match[1].split(',').map(s => s.trim()).filter(s => s.length > 0)
+            }
+            return null
+        } else {
+            // PostgreSQL/瀚高
+            xmlSql = `SELECT RESOURCE_NAME_ as resourceName FROM ACT_RE_PROCDEF WHERE ID_ = $1`
+            const result = await db.query(xmlSql, [procDefId])
+            if (result.rows.length === 0) return null
+            const bpmnXml = result.rows[0].resourceName
+            if (!bpmnXml) return null
+            
+            // 使用正则表达式提取 candidateGroups 属性
+            const regex = new RegExp(`<userTask[^>]*id="${taskDefKey}"[^>]*candidateGroups="([^"]+)"[^>]*>`, 'i')
+            const match = bpmnXml.match(regex)
+            if (match && match[1]) {
+                return match[1].split(',').map(s => s.trim()).filter(s => s.length > 0)
+            }
+            return null
+        }
+    } catch (error) {
+        console.error('[ERROR] getCandidateGroupsFromBpmn:', error)
+        return null
+    }
+}
+
+// 根据角色代码获取用户列表
+async function getUsersByRoles(db, dbType, roleCodes) {
+    try {
+        if (!roleCodes || roleCodes.length === 0) return []
+        
+        const placeholders = dbType === 'mysql' 
+            ? roleCodes.map(() => '?').join(',')
+            : roleCodes.map((_, i) => `$${i + 1}`).join(',')
+        
+        // 查询角色对应的用户
+        let sql
+        if (dbType === 'mysql') {
+            sql = `
+                SELECT DISTINCT u.id, u.username, u.realname
+                FROM sys_user u
+                JOIN sys_user_role ur ON u.id = ur.user_id
+                JOIN sys_role r ON ur.role_id = r.id
+                WHERE r.role_code IN (${placeholders})
+                  AND u.del_flag = 0
+                  AND u.status = 1
+            `
+            const [rows] = await db.execute(sql, roleCodes)
+            return rows
+        } else {
+            sql = `
+                SELECT DISTINCT u.id, u.username, u.realname
+                FROM sys_user u
+                JOIN sys_user_role ur ON u.id = ur.user_id
+                JOIN sys_role r ON ur.role_id = r.id
+                WHERE r.role_code IN (${placeholders})
+                  AND u.del_flag = 0
+                  AND u.status = 1
+            `
+            const result = await db.query(sql, roleCodes)
+            return result.rows
+        }
+    } catch (error) {
+        console.error('[ERROR] getUsersByRoles:', error)
+        return []
+    }
+}
+
 function openBrowser(url) {
     if (process.platform === 'win32') {
         exec(`start ${url}`)
@@ -1566,6 +1649,25 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
+            // 6.1 如果还是没有候选人，从流程图的 candidateGroups 获取
+            if (identityLinks.length === 0 && !taskAssignee) {
+                const candidateGroups = await getCandidateGroupsFromBpmn(db, dbType, taskData.procDefId, taskData.taskDefKey)
+                if (candidateGroups && candidateGroups.length > 0) {
+                    console.log(`[DEBUG] 从流程图获取候选组: ${candidateGroups.join(',')}`)
+                    const users = await getUsersByRoles(db, dbType, candidateGroups)
+                    if (users.length > 0) {
+                        identityLinks = users.map(user => ({
+                            type: 'candidate',
+                            userId: user.id,
+                            groupId: null,
+                            taskId: targetTaskId,
+                            procInstId: instanceId
+                        }))
+                        console.log(`[DEBUG] 根据角色获取到 ${users.length} 个候选人`)
+                    }
+                }
+            }
+            
             // 7. 创建任务，使用原来的任务ID和原来的execution_id_
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
@@ -1766,6 +1868,25 @@ async function jumpToHistoryTask(db, dbType, instanceId, targetTaskId) {
             let taskAssignee = null
             if (identityLinks.length === 0) {
                 taskAssignee = taskData.taskAssignee
+            }
+            
+            // 6.1 如果还是没有候选人，从流程图的 candidateGroups 获取
+            if (identityLinks.length === 0 && !taskAssignee) {
+                const candidateGroups = await getCandidateGroupsFromBpmn(client, dbType, taskData.procDefId, taskData.taskDefKey)
+                if (candidateGroups && candidateGroups.length > 0) {
+                    console.log(`[DEBUG] 从流程图获取候选组: ${candidateGroups.join(',')}`)
+                    const users = await getUsersByRoles(client, dbType, candidateGroups)
+                    if (users.length > 0) {
+                        identityLinks = users.map(user => ({
+                            type: 'candidate',
+                            userId: user.id,
+                            groupId: null,
+                            taskId: targetTaskId,
+                            procInstId: instanceId
+                        }))
+                        console.log(`[DEBUG] 根据角色获取到 ${users.length} 个候选人`)
+                    }
+                }
             }
             
             // 创建任务，使用原来的任务ID和原来的execution_id_
@@ -2019,6 +2140,25 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
                 taskAssignee = taskData.taskAssignee
             }
             
+            // 5.1 如果还是没有候选人，从流程图的 candidateGroups 获取
+            if (identityLinks.length === 0 && !taskAssignee) {
+                const candidateGroups = await getCandidateGroupsFromBpmn(db, dbType, taskData.procDefId, taskData.taskDefKey)
+                if (candidateGroups && candidateGroups.length > 0) {
+                    console.log(`[DEBUG] 从流程图获取候选组: ${candidateGroups.join(',')}`)
+                    const users = await getUsersByRoles(db, dbType, candidateGroups)
+                    if (users.length > 0) {
+                        identityLinks = users.map(user => ({
+                            type: 'candidate',
+                            userId: user.id,
+                            groupId: null,
+                            taskId: targetTaskId,
+                            procInstId: instanceId
+                        }))
+                        console.log(`[DEBUG] 根据角色获取到 ${users.length} 个候选人`)
+                    }
+                }
+            }
+            
             // 6. 创建任务，使用原来的任务ID和原来的execution_id_
             const insertTaskSql = `
                 INSERT INTO ACT_RU_TASK (
@@ -2195,6 +2335,25 @@ async function jumpToFinishedHistoryTask(db, dbType, instanceId, targetTaskId) {
             let taskAssignee = null
             if (identityLinks.length === 0) {
                 taskAssignee = taskData.taskAssignee
+            }
+            
+            // 5.1 如果还是没有候选人，从流程图的 candidateGroups 获取
+            if (identityLinks.length === 0 && !taskAssignee) {
+                const candidateGroups = await getCandidateGroupsFromBpmn(client, dbType, taskData.procDefId, taskData.taskDefKey)
+                if (candidateGroups && candidateGroups.length > 0) {
+                    console.log(`[DEBUG] 从流程图获取候选组: ${candidateGroups.join(',')}`)
+                    const users = await getUsersByRoles(client, dbType, candidateGroups)
+                    if (users.length > 0) {
+                        identityLinks = users.map(user => ({
+                            type: 'candidate',
+                            userId: user.id,
+                            groupId: null,
+                            taskId: targetTaskId,
+                            procInstId: instanceId
+                        }))
+                        console.log(`[DEBUG] 根据角色获取到 ${users.length} 个候选人`)
+                    }
+                }
             }
             
             // 创建任务，使用原来的任务ID和原来的execution_id_
