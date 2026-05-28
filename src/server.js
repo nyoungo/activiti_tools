@@ -373,8 +373,8 @@ app.put('/api/history-tasks/:taskId/assignee', async (req, res) => {
     }
     
     try {
-        const { assignee, endTime } = req.body
-        await updateHistoryTaskAssignee(activitiDb, dbConfig.dbType, req.params.taskId, assignee, endTime)
+        const { assignee, endTime, taskName } = req.body
+        await updateHistoryTaskAssignee(activitiDb, dbConfig.dbType, req.params.taskId, assignee, endTime, taskName)
         res.json({ success: true })
     } catch (error) {
         res.status(500).json({ error: error.message })
@@ -2605,7 +2605,7 @@ async function getUsers(dbType, keyword = '') {
     return cachedUsers
 }
 
-async function updateHistoryTaskAssignee(db, dbType, taskId, assignee, endTime) {
+async function updateHistoryTaskAssignee(db, dbType, taskId, assignee, endTime, taskName) {
     // 统一转换日期格式
     let formattedDate = null
     if (endTime) {
@@ -2623,14 +2623,14 @@ async function updateHistoryTaskAssignee(db, dbType, taskId, assignee, endTime) 
     
     let sql
     if (dbType === 'mysql') {
-        sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = ?, END_TIME_ = ? WHERE ID_ = ?'
-        await db.execute(sql, [assignee, formattedDate, taskId])
+        sql = 'UPDATE ACT_HI_TASKINST SET NAME_ = ?, ASSIGNEE_ = ?, END_TIME_ = ? WHERE ID_ = ?'
+        await db.execute(sql, [taskName, assignee, formattedDate, taskId])
         
         sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = ? WHERE TASK_ID_ = ? AND TYPE_ = \'assignee\''
         await db.execute(sql, [assignee, taskId])
     } else {
-        sql = 'UPDATE ACT_HI_TASKINST SET ASSIGNEE_ = $1, END_TIME_ = $2 WHERE ID_ = $3'
-        await db.query(sql, [assignee, formattedDate, taskId])
+        sql = 'UPDATE ACT_HI_TASKINST SET NAME_ = $1, ASSIGNEE_ = $2, END_TIME_ = $3 WHERE ID_ = $4'
+        await db.query(sql, [taskName, assignee, formattedDate, taskId])
         
         sql = 'UPDATE ACT_HI_IDENTITYLINK SET USER_ID_ = $1 WHERE TASK_ID_ = $2 AND TYPE_ = $3'
         await db.query(sql, [assignee, taskId, 'assignee'])
