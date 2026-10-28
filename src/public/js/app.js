@@ -67,6 +67,7 @@ const state = {
     detailId: null,
     detail: null,
     detailTab: 'overview',
+    detailDiagramMode: 'graph',
     detailData: { variables: [], history: [], activities: [], xml: null },
     modalTask: null
 }
@@ -250,11 +251,11 @@ async function withBusy(element, work) {
 
 let dialogResolver = null
 
-function modalShell(title, body, footer) {
+function modalShell(title, body, footer, closeAction = 'modal-close') {
     return `
         <header class="modal-head">
             <h3>${esc(title)}</h3>
-            <button type="button" class="icon-btn" data-action="modal-close" aria-label="关闭">×</button>
+            <button type="button" class="icon-btn" data-action="${closeAction}" aria-label="关闭">×</button>
         </header>
         <div class="modal-body">${body}</div>
         ${footer ? `<footer class="modal-foot">${footer}</footer>` : ''}
@@ -263,6 +264,8 @@ function modalShell(title, body, footer) {
 
 function openModal(html, size = 'md') {
     const root = $('modalRoot')
+    // 先销毁上一次的流程图实例，避免事件监听残留
+    destroyBpmnHost(root.querySelector('[data-bpmn-editor]'))
     root.hidden = false
     root.innerHTML = `<div class="modal-backdrop" data-action="modal-close"></div><div class="modal modal-${size}" role="dialog" aria-modal="true">${html}</div>`
     document.body.classList.add('modal-open')
@@ -270,11 +273,29 @@ function openModal(html, size = 'md') {
 
 function closeModal(result = null) {
     const root = $('modalRoot')
-    const resolve = dialogResolver
-    dialogResolver = null
+    destroyBpmnHost(root.querySelector('[data-bpmn-editor]'))
     root.hidden = true
     root.innerHTML = ''
-    document.body.classList.remove('modal-open')
+    if ($('dialogRoot').hidden) document.body.classList.remove('modal-open')
+    return result
+}
+
+/* 确认框使用独立图层，避免覆盖正在编辑的弹层（如流程图编辑器） */
+
+function openDialog(html) {
+    const root = $('dialogRoot')
+    root.hidden = false
+    root.innerHTML = `<div class="modal-backdrop" data-action="dialog-cancel"></div><div class="modal modal-sm" role="dialog" aria-modal="true">${html}</div>`
+    document.body.classList.add('modal-open')
+}
+
+function closeDialog(result = null) {
+    const root = $('dialogRoot')
+    root.hidden = true
+    root.innerHTML = ''
+    if ($('modalRoot').hidden) document.body.classList.remove('modal-open')
+    const resolve = dialogResolver
+    dialogResolver = null
     if (resolve) resolve(result)
 }
 
@@ -299,10 +320,10 @@ function askDialog(options = {}) {
                 : `<input id="dialogInput" type="text" placeholder="${esc(placeholder)}" value="${esc(value)}">`
             }</label>`
             : ''
-        openModal(modalShell(title, `<div class="dialog-message">${message}</div>${inputHtml}`, `
+        openDialog(modalShell(title, `<div class="dialog-message">${message}</div>${inputHtml}`, `
             <button type="button" class="btn btn-secondary" data-action="dialog-cancel">${esc(cancelText)}</button>
             <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-action="dialog-confirm">${esc(confirmText)}</button>
-        `), 'sm')
+        `, 'dialog-cancel'))
 
         const input = $('dialogInput')
         if (input) {
@@ -757,6 +778,7 @@ async function openInstance(id) {
     state.detailId = id
     state.detail = null
     state.detailTab = 'overview'
+    state.detailDiagramMode = 'graph'
     state.detailData = { variables: [], history: [], activities: [], xml: null }
     $('drawerRoot').hidden = false
     document.body.classList.add('drawer-open')
@@ -786,8 +808,12 @@ async function reloadDetail() {
 }
 
 function closeDrawer() {
+    destroyBpmnHost(document.querySelector('#drawerRoot [data-bpmn-editor]'))
     state.detail = null
     state.detailId = null
+    state.detailTab = 'overview'
+    state.detailDiagramMode = 'graph'
+    state.detailData = { variables: [], history: [], activities: [], xml: null }
     $('drawerRoot').hidden = true
     $('drawerRoot').innerHTML = ''
     document.body.classList.remove('drawer-open')
@@ -797,6 +823,9 @@ function renderDrawer() {
     const root = $('drawerRoot')
     if (root.hidden) return
     const detail = state.detail
+
+    // 重新渲染会替换 DOM，先销毁旧的 bpmn 实例，避免事件与内存泄漏
+    destroyBpmnHost(document.querySelector('#drawerRoot [data-bpmn-editor]'))
 
     if (!detail) {
         root.innerHTML = `<div class="drawer-backdrop" data-action="close-drawer"></div>
@@ -858,6 +887,29 @@ function renderDrawer() {
             <div class="drawer-body">${renderDrawerTab()}</div>
         </aside>
     `
+
+    // 流程图标签页渲染完成后挂载 bpmn 实例（容器必须已在文档中）
+    if (state.detailTab === 'xml' && dataReadyForDiagram()) mountDrawerDiagram()
+}
+
+function dataReadyForDiagram() {
+    return state.detailData.xml !== null && state.detailData.xml !== ''
+}
+
+function mountDrawerDiagram() {
+    const root = document.querySelector('#drawerRoot [data-bpmn-editor]')
+    if (!root) return
+    mountBpmnEditor(root, {
+        xml: state.detailData.xml,
+        editable: true,
+        onSaved: (xml) => {
+            state.detailData.xml = xml
+            state.xmlOriginal = xml
+        }
+    }).catch((error) => {
+        const canvas = root.querySelector('[data-bpmn-canvas]')
+        if (canvas) canvas.innerHTML = emptyState('流程图加载失败', esc(error.message || ''))
+    })
 }
 
 function renderDrawerTab() {
@@ -968,6 +1020,12 @@ function renderDrawerTab() {
                             <td>
                                 <div class="cell-title">${esc(task.name || '任务')}</div>
                                 <div class="cell-sub"><code>${esc(task.id)}</code>${task.deleteReason ? ` · ${esc(task.deleteReason)}` : ''}</div>
+                                ${task.comment ? `
+                                    <div class="cell-comment" title="${esc(task.comment)}">
+                                        <span class="cell-comment-label">审批意见</span>${esc(task.comment)}
+                                    </div>
+                                    ${task.commentCount > 1 ? `<div class="cell-sub">共 ${task.commentCount} 条，编辑时修改最新一条</div>` : ''}
+                                ` : ''}
                             </td>
                             <td>${task.assignee ? esc(task.assigneeLabel || task.assignee) : '<span class="muted">—</span>'}</td>
                             <td class="nowrap">${esc(fmtTime(task.startTime))}</td>
@@ -987,16 +1045,13 @@ function renderDrawerTab() {
     if (state.detailTab === 'xml') {
         if (state.detailData.xml === null) return loadingState('加载流程图…')
         if (!state.detailData.xml) return emptyState('未找到 BPMN 文件', '该流程定义可能没有部署 XML 资源')
-        return `
-            <div class="section-head">
-                <h4>BPMN 2.0 XML</h4>
-                <div class="section-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" data-action="xml-copy">复制</button>
-                    <button type="button" class="btn btn-secondary btn-sm" data-action="xml-edit" data-id="${esc(detail.procDefId)}">编辑流程图</button>
-                </div>
-            </div>
-            <pre class="code-block">${esc(state.detailData.xml)}</pre>
-        `
+        return bpmnEditorMarkup({
+            definitionId: detail.procDefId,
+            editable: true,
+            mode: state.detailDiagramMode,
+            xml: state.detailData.xml,
+            saveText: '保存'
+        })
     }
 
     const rows = [
@@ -1183,8 +1238,8 @@ async function loadDefinitionsView() {
                         <td>${fmtNumber(definition.runningCount)}</td>
                         <td>${definitionBadge(definition)}</td>
                         <td class="col-actions">
-                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-view" data-id="${esc(definition.id)}">查看 XML</button>
-                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-edit" data-id="${esc(definition.id)}">编辑</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-view" data-id="${esc(definition.id)}">流程图</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-edit" data-id="${esc(definition.id)}">编辑流程</button>
                             <button type="button" class="btn btn-ghost btn-xs" data-action="def-nodes" data-id="${esc(definition.id)}">节点</button>
                             <button type="button" class="btn btn-ghost btn-xs" data-action="def-toggle"
                                 data-id="${esc(definition.id)}" data-suspended="${definition.suspended ? '1' : '0'}">
@@ -1376,6 +1431,9 @@ function openVariableModal(mode, variable) {
 /* ============================ 历史任务编辑 ============================ */
 
 function openHistoryTaskModal(task) {
+    const commentMeta = task.comment
+        ? `最近一条：${esc(fmtTime(task.commentTime))}${task.commentUserLabel ? ` · ${esc(task.commentUserLabel)}` : ''}${task.commentCount > 1 ? ` · 共 ${task.commentCount} 条` : ''}`
+        : '该任务暂无审批意见，填写后保存会新增一条'
     const body = `
         <div class="form-grid">
             <label class="field">
@@ -1398,6 +1456,15 @@ function openHistoryTaskModal(task) {
             </label>
         </div>
         <p class="form-hint">清空「审批时间」会将该历史任务标记为未完成，请谨慎操作。</p>
+        <hr class="divider">
+        <label class="field">
+            <span>审批意见</span>
+            <textarea id="historyComment" rows="4" maxlength="4000" placeholder="填写或修改该任务的审批意见">${esc(task.comment || '')}</textarea>
+            <p class="form-hint">
+                ${commentMeta}<br>
+                留空并保存会删除该任务的审批意见；只修改审批意见表（act_hi_comment），不影响流程流转与审批时间。
+            </p>
+        </label>
     `
     openModal(modalShell('编辑历史审批记录', body, `
         <button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
@@ -1405,7 +1472,311 @@ function openHistoryTaskModal(task) {
     `))
 }
 
-/* ============================ 流程图 ============================ */
+/* ============================ 流程图（可视化 / XML） ============================ */
+
+// bpmn-js 按需加载：只有打开流程图时才拉取资源，避免拖慢首屏
+const bpmnAssets = {
+    cssLoaded: false,
+    bundles: {
+        viewer: { src: 'vendor/bpmn-js/bpmn-navigated-viewer.production.min.js', ctor: null },
+        modeler: { src: 'vendor/bpmn-js/bpmn-modeler.production.min.js', ctor: null }
+    }
+}
+
+// 元素 -> 编辑器实例。使用 WeakMap，DOM 被替换后自动回收
+const bpmnHosts = new WeakMap()
+
+function loadBpmnStyles() {
+    if (bpmnAssets.cssLoaded) return
+    bpmnAssets.cssLoaded = true
+    ;[
+        'vendor/bpmn-js/bpmn-embedded.css',
+        'vendor/bpmn-js/bpmn-js.css',
+        'vendor/bpmn-js/diagram-js.css'
+    ].forEach((href) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = href
+        document.head.appendChild(link)
+    })
+}
+
+function loadBpmnScript(src) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = src
+        script.onload = () => resolve()
+        script.onerror = () => reject(new Error('流程图组件加载失败，请确认 vendor/bpmn-js 目录完整'))
+        document.head.appendChild(script)
+    })
+}
+
+async function loadBpmnBundle(kind) {
+    const bundle = bpmnAssets.bundles[kind]
+    if (bundle.ctor) return bundle.ctor
+    loadBpmnStyles()
+    await loadBpmnScript(bundle.src)
+    // viewer 与 modeler 两个 UMD 包都会挂到 window.BpmnJS 上，加载后立即缓存，避免互相覆盖
+    bundle.ctor = window.BpmnJS
+    if (!bundle.ctor) throw new Error('流程图组件初始化失败')
+    return bundle.ctor
+}
+
+function bpmnEditorMarkup(options = {}) {
+    const { definitionId = '', editable = true, mode = 'graph', xml = '', saveText = '保存修改', showActions = true } = options
+    return `
+        <div class="bpmn-editor" data-bpmn-editor data-definition-id="${esc(definitionId)}" data-bpmn-editable="${editable ? '1' : '0'}">
+            <div class="bpmn-toolbar">
+                <div class="segmented">
+                    <button type="button" class="${mode === 'graph' ? 'is-active' : ''}" data-action="bpmn-mode" data-mode="graph">图形</button>
+                    <button type="button" class="${mode === 'xml' ? 'is-active' : ''}" data-action="bpmn-mode" data-mode="xml">XML</button>
+                </div>
+                <span class="bpmn-dirty" data-bpmn-dirty hidden>未保存</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn btn-ghost btn-sm" data-action="bpmn-fit" ${mode === 'graph' ? '' : 'hidden'}>适应画布</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-action="bpmn-copy">复制 XML</button>
+                ${editable && showActions ? `<button type="button" class="btn btn-secondary btn-sm" data-action="bpmn-reset">重置</button>
+                <button type="button" class="btn btn-primary btn-sm" data-action="bpmn-save">${esc(saveText)}</button>` : ''}
+            </div>
+            <div class="bpmn-pane" data-bpmn-pane="graph" ${mode === 'graph' ? '' : 'hidden'}>
+                <div class="bpmn-canvas" data-bpmn-canvas></div>
+            </div>
+            <div class="bpmn-pane" data-bpmn-pane="xml" ${mode === 'xml' ? '' : 'hidden'}>
+                <textarea class="code-editor" data-bpmn-xml spellcheck="false" ${editable ? '' : 'readonly'}>${esc(xml)}</textarea>
+            </div>
+            ${editable ? '<p class="form-hint">图形模式支持拖拽调整布局、增删节点与连线；处理人、表单、条件表达式等属性请在 XML 模式编辑。切换「图形 / XML」不会丢失修改，保存前请确认。</p>' : ''}
+        </div>
+    `
+}
+
+function bpmnHostOf(el) {
+    if (!el) return null
+    // 弹层工具栏里的按钮在编辑器之外，需要从所属容器里找回编辑器根节点
+    const root = el.closest('[data-bpmn-editor]')
+        || (el.closest('#modalRoot, #drawerRoot') || document).querySelector('[data-bpmn-editor]')
+    return root ? bpmnHosts.get(root) : null
+}
+
+function setBpmnDirty(host, dirty) {
+    host.dirty = Boolean(dirty)
+    const badge = host.root.querySelector('[data-bpmn-dirty]')
+    if (badge) badge.hidden = !host.dirty
+}
+
+function fitBpmn(host) {
+    if (!host || !host.instance) return
+    try {
+        const canvas = host.instance.get('canvas')
+        canvas.zoom('fit-viewport')
+        if (host.editable) {
+            // 左侧工具面板会压住图形，向左扩展视口给它留出空间
+            const viewbox = canvas.viewbox()
+            canvas.viewbox({
+                x: viewbox.x - 70,
+                y: viewbox.y - 20,
+                width: viewbox.width + 70,
+                height: viewbox.height + 20
+            })
+        }
+    } catch (error) {
+        console.warn('[BPMN] fit failed:', error)
+    }
+}
+
+function setBpmnModeUI(host, mode) {
+    host.mode = mode
+    host.root.querySelectorAll('[data-action="bpmn-mode"]').forEach((btn) => {
+        btn.classList.toggle('is-active', btn.dataset.mode === mode)
+    })
+    host.root.querySelectorAll('[data-bpmn-pane]').forEach((pane) => {
+        pane.hidden = pane.dataset.bpmnPane !== mode
+    })
+    const fitBtn = host.root.querySelector('[data-action="bpmn-fit"]')
+    if (fitBtn) fitBtn.hidden = mode !== 'graph'
+    if (mode === 'graph') fitBpmn(host)
+}
+
+async function bpmnCurrentXml(host) {
+    if (!host) return ''
+    if (host.mode === 'xml') return host.textarea.value
+    // 只读实例（navigated-viewer）没有 saveXML，直接返回原始 XML
+    if (!host.editable) return host.baseline
+    const result = await host.instance.saveXML({ format: true })
+    return result.xml
+}
+
+async function mountBpmnEditor(root, options = {}) {
+    if (!root) return null
+    const editable = options.editable !== false
+    const xml = options.xml || ''
+    const canvasEl = root.querySelector('[data-bpmn-canvas]')
+    const textarea = root.querySelector('[data-bpmn-xml]')
+
+    const host = {
+        root,
+        textarea,
+        editable,
+        instance: null,
+        mode: 'graph',
+        baseline: xml,
+        exportedXml: '',
+        dirty: false,
+        destroyed: false,
+        definitionId: root.dataset.definitionId || '',
+        onSaved: options.onSaved || null
+    }
+    bpmnHosts.set(root, host)
+    if (textarea) textarea.value = xml
+
+    const Ctor = await loadBpmnBundle(editable ? 'modeler' : 'viewer')
+    if (host.destroyed) return host
+
+    const instance = new Ctor({ container: canvasEl })
+    host.instance = instance
+
+    if (editable) {
+        instance.on('commandStack.changed', () => setBpmnDirty(host, true))
+        if (textarea) {
+            textarea.addEventListener('input', () => {
+                // 与原始 XML 比较，改回原样时自动消除「未保存」标记
+                setBpmnDirty(host, textarea.value.trim() !== host.baseline.trim())
+            })
+        }
+    }
+
+    try {
+        await instance.importXML(xml)
+    } catch (error) {
+        // 缺少 BPMNDiagram / 坐标信息的旧流程无法渲染，退化为 XML 编辑
+        console.warn('[BPMN] import failed:', error)
+        setBpmnModeUI(host, 'xml')
+        toast(`流程图无法渲染：${error.message}，已切换到 XML 模式`, 'error')
+        return host
+    }
+
+    fitBpmn(host)
+    return host
+}
+
+async function switchBpmnMode(host, mode) {
+    if (!host || host.mode === mode) return
+    if (mode === 'xml') {
+        if (host.editable) {
+            try {
+                const result = await host.instance.saveXML({ format: true })
+                host.exportedXml = result.xml
+                host.textarea.value = result.xml
+            } catch (error) {
+                toast(`获取 XML 失败：${error.message}`, 'error')
+                return
+            }
+        }
+        setBpmnModeUI(host, 'xml')
+        host.textarea.focus()
+        host.textarea.scrollTop = 0
+        return
+    }
+
+    const xml = host.textarea.value.trim()
+    if (!xml) {
+        toast('XML 内容不能为空', 'error')
+        return
+    }
+    // 内容未变化时只切换视图，避免无谓地重置画布与撤销栈
+    if (host.editable && xml !== host.exportedXml.trim()) {
+        try {
+            await host.instance.importXML(xml)
+        } catch (error) {
+            toast(`XML 解析失败：${error.message}`, 'error')
+            return
+        }
+        host.exportedXml = xml
+    }
+    setBpmnModeUI(host, 'graph')
+}
+
+async function resetBpmnHost(host) {
+    if (!host || !host.editable) return
+    try {
+        await host.instance.importXML(host.baseline)
+        host.textarea.value = host.baseline
+        host.exportedXml = ''
+        setBpmnDirty(host, false)
+        if (host.mode === 'graph') fitBpmn(host)
+        toast('已恢复为最近一次保存的内容', 'info')
+    } catch (error) {
+        toast(`重置失败：${error.message}`, 'error')
+    }
+}
+
+async function saveBpmnHost(host, el) {
+    if (!host || !host.editable) return
+    const xml = (await bpmnCurrentXml(host)).trim()
+    if (!xml) {
+        toast('XML 内容不能为空', 'error')
+        return
+    }
+    if (!/<(?:\w+:)?definitions[\s>]/.test(xml) || !/<(?:\w+:)?process[\s>]/.test(xml)) {
+        toast('XML 内容不完整：必须包含 definitions 与 process 节点', 'error')
+        return
+    }
+    const ok = await askDialog({
+        title: '保存流程定义 XML',
+        message: '修改会覆盖该部署的 BPMN 资源，影响后续所有新建实例。<br>正在运行的实例不会自动迁移，确定保存吗？',
+        confirmText: '确认保存',
+        danger: true
+    })
+    if (ok === null) return
+
+    await withBusy(el, () => api.put(`/api/definitions/${enc(host.definitionId)}/xml`, { xml }))
+    host.baseline = xml
+    host.textarea.value = xml
+    // XML 模式下保存后画布还是旧图，清空标记以便切回图形时重新导入
+    host.exportedXml = host.mode === 'xml' ? '' : xml
+    setBpmnDirty(host, false)
+    state.xmlOriginal = xml
+    toast('流程图已保存', 'success')
+    if (host.onSaved) await host.onSaved(xml)
+}
+
+async function copyBpmnXml(host) {
+    if (!host) return
+    try {
+        const xml = await bpmnCurrentXml(host)
+        await navigator.clipboard.writeText(xml)
+        toast('XML 已复制到剪贴板', 'success')
+    } catch (error) {
+        toast('复制失败，请手动选择文本', 'error')
+    }
+}
+
+function destroyBpmnHost(root) {
+    const host = root ? bpmnHosts.get(root) : null
+    if (!host) return
+    host.destroyed = true
+    bpmnHosts.delete(root)
+    if (host.instance) {
+        try {
+            host.instance.destroy()
+        } catch (error) {
+            console.warn('[BPMN] destroy failed:', error)
+        }
+    }
+    host.instance = null
+}
+
+// 有未保存修改时，离开前二次确认
+async function confirmDiscardBpmn(root) {
+    const host = root ? bpmnHosts.get(root) : null
+    if (!host || !host.dirty) return true
+    const ok = await askDialog({
+        title: '放弃未保存的修改',
+        message: '当前流程图有未保存的修改，离开后这些修改会丢失。',
+        confirmText: '放弃修改',
+        danger: true
+    })
+    return ok !== null
+}
 
 async function openXmlModal(definitionId, editable) {
     const data = await api.get(`/api/definitions/${enc(definitionId)}/xml`)
@@ -1421,7 +1792,7 @@ async function openXmlModal(definitionId, editable) {
     const warning = affected.total > 0
         ? `<div class="notice notice-warn">
                <strong>该定义已关联 ${fmtNumber(affected.total)} 个历史实例</strong>
-               <span>修改 XML 只会覆盖部署资源，不会迁移已经运行的实例。</span>
+               <span>修改只会覆盖部署资源，不会迁移已经运行的实例。</span>
            </div>`
         : '<div class="notice notice-info">该流程定义暂无关联的历史实例。</div>'
 
@@ -1432,16 +1803,39 @@ async function openXmlModal(definitionId, editable) {
             <span class="mono">${esc(definition.resourceName || '')}</span>
         </div>
         ${warning}
-        <textarea id="xmlEditor" class="code-editor" spellcheck="false" ${editable ? '' : 'readonly'}>${esc(data.xml || '')}</textarea>
+        ${bpmnEditorMarkup({
+            definitionId,
+            editable,
+            mode: 'graph',
+            xml: data.xml || '',
+            showActions: false
+        })}
     `
     const footer = editable
         ? `<button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
-           <button type="button" class="btn btn-secondary" data-action="xml-reset">重置</button>
-           <button type="button" class="btn btn-primary" data-action="xml-save" data-id="${esc(definitionId)}">保存修改</button>`
+           <button type="button" class="btn btn-ghost" data-action="bpmn-reset">重置</button>
+           <button type="button" class="btn btn-primary" data-action="bpmn-save">保存修改</button>`
         : `<button type="button" class="btn btn-secondary" data-action="modal-close">关闭</button>
            <button type="button" class="btn btn-primary" data-action="xml-edit" data-id="${esc(definitionId)}">编辑</button>`
 
-    openModal(modalShell('流程定义 XML', body, footer), 'lg')
+    openModal(modalShell(editable ? '编辑流程图' : '查看流程图', body, footer), 'xl')
+
+    const root = $('modalRoot').querySelector('[data-bpmn-editor]')
+    await mountBpmnEditor(root, {
+        xml: data.xml || '',
+        editable,
+        onSaved: async () => {
+            closeModal()
+            state.definitions = await api.get('/api/definitions')
+            if (state.view === 'definitions') await loadDefinitionsView()
+            if (state.detail && state.detailTab === 'xml') {
+                state.detailData.xml = state.xmlOriginal
+                renderDrawer()
+            }
+        }
+    }).catch((error) => {
+        toast(error.message, 'error')
+    })
 }
 
 async function openNodePicker() {
@@ -1537,11 +1931,14 @@ async function openMigrateModal() {
 
 const actions = {
     /* ---- 弹层 ---- */
-    'modal-close': () => closeModal(null),
-    'dialog-cancel': () => closeModal(null),
+    'modal-close': async () => {
+        if (!await confirmDiscardBpmn(document.querySelector('#modalRoot [data-bpmn-editor]'))) return
+        closeModal(null)
+    },
+    'dialog-cancel': () => closeDialog(null),
     'dialog-confirm': () => {
         const input = $('dialogInput')
-        closeModal(input ? input.value : true)
+        closeDialog(input ? input.value : true)
     },
 
     /* ---- 连接页 ---- */
@@ -1587,8 +1984,14 @@ const actions = {
 
     /* ---- 实例 ---- */
     'open-instance': (el) => openInstance(el.dataset.id),
-    'close-drawer': () => closeDrawer(),
-    'instance-refresh': () => reloadDetail(),
+    'close-drawer': async () => {
+        if (!await confirmDiscardBpmn(document.querySelector('#drawerRoot [data-bpmn-editor]'))) return
+        closeDrawer()
+    },
+    'instance-refresh': async () => {
+        if (!await confirmDiscardBpmn(document.querySelector('#drawerRoot [data-bpmn-editor]'))) return
+        await reloadDetail()
+    },
     'instance-page': (el) => {
         state.instancePage = Number(el.dataset.page) || 1
         loadInstances().catch(handleError)
@@ -1682,7 +2085,11 @@ const actions = {
 
     /* ---- 抽屉标签 ---- */
     'drawer-tab': async (el) => {
-        state.detailTab = el.dataset.tab
+        const nextTab = el.dataset.tab
+        if (nextTab === state.detailTab) return
+        // 离开流程图标签页前，检查是否有未保存的图形编辑
+        if (state.detailTab === 'xml' && !await confirmDiscardBpmn(document.querySelector('#drawerRoot [data-bpmn-editor]'))) return
+        state.detailTab = nextTab
         if (state.detailTab === 'xml') {
             try {
                 await ensureDrawerXml()
@@ -1693,6 +2100,18 @@ const actions = {
         }
         renderDrawer()
     },
+
+    /* ---- 流程图 ---- */
+    'bpmn-mode': async (el) => {
+        const host = bpmnHostOf(el)
+        if (!host) return
+        if (host.root.closest('#drawerRoot')) state.detailDiagramMode = el.dataset.mode === 'xml' ? 'xml' : 'graph'
+        await switchBpmnMode(host, el.dataset.mode === 'xml' ? 'xml' : 'graph')
+    },
+    'bpmn-fit': (el) => fitBpmn(bpmnHostOf(el)),
+    'bpmn-reset': (el) => resetBpmnHost(bpmnHostOf(el)),
+    'bpmn-save': (el) => saveBpmnHost(bpmnHostOf(el), el),
+    'bpmn-copy': (el) => copyBpmnXml(bpmnHostOf(el)),
 
     /* ---- 变量 ---- */
     'variable-add': () => openVariableModal('add', null),
@@ -1733,14 +2152,18 @@ const actions = {
     },
     'history-save': async (el) => {
         const endTime = $('historyEndTime').value
-        await withBusy(el, () => api.put(`/api/history-tasks/${enc(el.dataset.id)}`, {
+        const commentField = $('historyComment')
+        const result = await withBusy(el, () => api.put(`/api/history-tasks/${enc(el.dataset.id)}`, {
             name: $('historyName').value,
             assignee: $('historyAssignee').value.trim(),
             endTime: endTime ? new Date(endTime).toISOString() : null,
-            deleteReason: $('historyDeleteReason').value
+            deleteReason: $('historyDeleteReason').value,
+            comment: commentField ? commentField.value : undefined
         }))
         closeModal()
-        toast('历史任务已更新', 'success')
+        const commentTips = { created: '，已新增审批意见', updated: '，审批意见已更新', deleted: '，审批意见已清空' }
+        const tip = result && commentTips[result.action] ? commentTips[result.action] : ''
+        toast(`历史任务已更新${tip}`, 'success')
         await reloadDetail()
     },
     'history-jump': async (el) => {
@@ -1833,42 +2256,6 @@ const actions = {
     /* ---- 流程定义 ---- */
     'xml-view': (el) => openXmlModal(el.dataset.id, false).catch(handleError),
     'xml-edit': (el) => openXmlModal(el.dataset.id, true).catch(handleError),
-    'xml-reset': () => {
-        const editor = $('xmlEditor')
-        if (editor) editor.value = state.xmlOriginal || ''
-    },
-    'xml-save': async (el) => {
-        const editor = $('xmlEditor')
-        if (!editor || !editor.value.trim()) {
-            toast('XML 内容不能为空', 'error')
-            return
-        }
-        const ok = await askDialog({
-            title: '保存流程定义 XML',
-            message: '修改会覆盖该部署的 BPMN 资源，影响后续所有新建实例。<br>正在运行的实例不会自动迁移，确定保存吗？',
-            confirmText: '确认保存',
-            danger: true
-        })
-        if (ok === null) return
-        await withBusy(el, () => api.put(`/api/definitions/${enc(el.dataset.id)}/xml`, { xml: editor.value }))
-        closeModal()
-        toast('流程图已保存', 'success')
-        state.definitions = await api.get('/api/definitions')
-        if (state.view === 'definitions') await loadDefinitionsView()
-        if (state.detailTab === 'xml') {
-            state.detailData.xml = null
-            await ensureDrawerXml()
-            renderDrawer()
-        }
-    },
-    'xml-copy': async () => {
-        try {
-            await navigator.clipboard.writeText(state.detailData.xml || '')
-            toast('XML 已复制到剪贴板', 'success')
-        } catch (error) {
-            toast('复制失败，请手动选择文本', 'error')
-        }
-    },
     'def-nodes': (el) => openDefinitionNodes(el.dataset.id).catch(handleError),
     'def-toggle': async (el) => {
         const suspended = el.dataset.suspended === '1'
@@ -1989,11 +2376,17 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-        if (!$('modalRoot').hidden) {
-            closeModal(null)
+        if (!$('dialogRoot').hidden) {
+            closeDialog(null)
             return
         }
-        if (!$('drawerRoot').hidden) closeDrawer()
+        if (!$('modalRoot').hidden) {
+            Promise.resolve(actions['modal-close']()).catch(handleError)
+            return
+        }
+        if (!$('drawerRoot').hidden) {
+            Promise.resolve(actions['close-drawer']()).catch(handleError)
+        }
     }
     if (event.key === 'Enter' && event.target.matches('input[type="search"]')) {
         applySearch(event.target.id)

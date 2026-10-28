@@ -485,6 +485,25 @@ async function safeCount(table, where = '', params = []) {
 
 const columnCache = new Map()
 
+/**
+ * 结构探测兜底：information_schema 拿不到时，用 SELECT * ... WHERE 1 = 0
+ * 读取驱动返回的字段元数据（瀚高 / 部分代理层会限制 information_schema 访问）。
+ */
+async function describeColumns(table) {
+    if (!dbState.pool) return []
+    try {
+        if (isMysql()) {
+            const [, fields] = await dbState.pool.query(`SELECT * FROM ${table} WHERE 1 = 0`)
+            return (fields || []).map((field) => String(field.name).toLowerCase())
+        }
+        const result = await dbState.pool.query(`SELECT * FROM ${table} WHERE 1 = 0`)
+        return (result.fields || []).map((field) => String(field.name).toLowerCase())
+    } catch (error) {
+        console.warn(`[COLUMNS] ${table} 结构探测失败:`, error.message)
+        return []
+    }
+}
+
 async function getColumns(table) {
     const key = String(table).toLowerCase()
     if (columnCache.has(key)) return columnCache.get(key)
@@ -498,8 +517,41 @@ async function getColumns(table) {
     } catch (error) {
         console.warn(`[COLUMNS] ${table}:`, error.message)
     }
-    columnCache.set(key, columns)
+    if (columns.length === 0) columns = await describeColumns(key)
+    // 只有探测成功才缓存，避免一次失败后永久按空结构处理
+    if (columns.length > 0) columnCache.set(key, columns)
     return columns
+}
+
+async function hasColumn(table, column) {
+    const columns = await getColumns(table)
+    return columns.length > 0 && columns.includes(String(column).toLowerCase())
+}
+
+/** 从候选列名中挑出当前库真实存在的那一个；结构未知时取第一个（按标准结构处理） */
+function pickColumn(columns, candidates) {
+    if (!columns || columns.length === 0) return candidates[0]
+    return candidates.find((candidate) => columns.includes(candidate.toLowerCase())) || null
+}
+
+/**
+ * 不同 Activiti 6.0 库的列并不完全一致：标准脚本里 act_ru_variable / act_hi_varinst
+ * 没有 TENANT_ID_（只有定制的 tenant_id），而 act_ru_execution / act_ru_task /
+ * act_hi_taskinst 等又有，写死列名会直接报 "column ... does not exist"。
+ *
+ * spec 每项：{ name, param } 走占位符传参、{ name, literal } 走 SQL 字面量，
+ * optional: true 表示该列在当前库不存在时直接跳过（列结构未知时也会跳过）。
+ */
+async function buildInsert(table, spec) {
+    const present = await getColumns(table)
+    const usable = spec.filter((item) =>
+        present.length === 0 ? !item.optional : present.includes(item.name.toLowerCase())
+    )
+    const usesParam = (item) => Object.prototype.hasOwnProperty.call(item, 'param')
+    const sql = `INSERT INTO ${table} (${usable.map((item) => item.name).join(', ')}) VALUES (${usable
+        .map((item) => (usesParam(item) ? '?' : item.literal))
+        .join(', ')})`
+    return { sql, params: usable.filter(usesParam).map((item) => item.param) }
 }
 
 async function getUserColumns() {
@@ -1302,20 +1354,41 @@ async function saveVariable(instanceId, payload) {
         }
 
         const id = newId()
-        await tx.execute(
-            `INSERT INTO act_ru_variable
-                (ID_, REV_, TYPE_, NAME_, EXECUTION_ID_, PROC_INST_ID_, TASK_ID_, BYTEARRAY_ID_, DOUBLE_, LONG_, TEXT_, TEXT2_, TENANT_ID_)
-             VALUES (?, 1, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, '')`,
-            [id, type, name, instanceId, instanceId, columns.DOUBLE_, columns.LONG_, columns.TEXT_, columns.TEXT2_]
-        )
+        const runtimeInsert = await buildInsert('act_ru_variable', [
+            { name: 'ID_', param: id },
+            { name: 'REV_', literal: '1' },
+            { name: 'TYPE_', param: type },
+            { name: 'NAME_', param: name },
+            { name: 'EXECUTION_ID_', param: instanceId },
+            { name: 'PROC_INST_ID_', param: instanceId },
+            { name: 'TASK_ID_', literal: 'NULL' },
+            { name: 'BYTEARRAY_ID_', literal: 'NULL' },
+            { name: 'DOUBLE_', param: columns.DOUBLE_ },
+            { name: 'LONG_', param: columns.LONG_ },
+            { name: 'TEXT_', param: columns.TEXT_ },
+            { name: 'TEXT2_', param: columns.TEXT2_ },
+            { name: 'TENANT_ID_', literal: "''", optional: true }
+        ])
+        await tx.execute(runtimeInsert.sql, runtimeInsert.params)
         if (historyAvailable) {
-            await tx.execute(
-                `INSERT INTO act_hi_varinst
-                    (ID_, PROC_INST_ID_, EXECUTION_ID_, TASK_ID_, NAME_, VAR_TYPE_, REV_, BYTEARRAY_ID_,
-                     DOUBLE_, LONG_, TEXT_, TEXT2_, CREATE_TIME_, LAST_UPDATED_TIME_, TENANT_ID_)
-                 VALUES (?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, '')`,
-                [id, instanceId, instanceId, name, type, columns.DOUBLE_, columns.LONG_, columns.TEXT_, columns.TEXT2_, now, now]
-            )
+            const historyInsert = await buildInsert('act_hi_varinst', [
+                { name: 'ID_', param: id },
+                { name: 'PROC_INST_ID_', param: instanceId },
+                { name: 'EXECUTION_ID_', param: instanceId },
+                { name: 'TASK_ID_', literal: 'NULL' },
+                { name: 'NAME_', param: name },
+                { name: 'VAR_TYPE_', param: type },
+                { name: 'REV_', literal: '1' },
+                { name: 'BYTEARRAY_ID_', literal: 'NULL' },
+                { name: 'DOUBLE_', param: columns.DOUBLE_ },
+                { name: 'LONG_', param: columns.LONG_ },
+                { name: 'TEXT_', param: columns.TEXT_ },
+                { name: 'TEXT2_', param: columns.TEXT2_ },
+                { name: 'CREATE_TIME_', param: now },
+                { name: 'LAST_UPDATED_TIME_', param: now },
+                { name: 'TENANT_ID_', literal: "''", optional: true }
+            ])
+            await tx.execute(historyInsert.sql, historyInsert.params)
         }
     })
 }
@@ -1327,6 +1400,106 @@ async function deleteVariable(instanceId, name) {
             await tx.execute('DELETE FROM act_hi_varinst WHERE PROC_INST_ID_ = ? AND NAME_ = ?', [instanceId, name])
         }
     })
+}
+
+// ==================== 审批意见（act_hi_comment） ====================
+
+/**
+ * 读取实例下的全部审批意见。
+ * act_hi_comment 各库列不统一（标准结构没有 FLOW_STATE_，瀚高只有小写列名），
+ * 因此按真实表结构拼 SELECT，缺列时返回 NULL 而不是让整个查询失败。
+ */
+async function listInstanceComments(instanceId) {
+    if (!hasTable('act_hi_comment')) return []
+    const present = await getColumns('act_hi_comment')
+    const has = (name) => present.length === 0 || present.includes(name.toLowerCase())
+    if (!has('PROC_INST_ID_')) return []
+
+    const expr = (column, alias) => (has(column) ? `c.${column} AS "${alias}"` : `NULL AS "${alias}"`)
+    const order = has('TIME_') ? 'c.TIME_ ASC, c.ID_ ASC' : 'c.ID_ ASC'
+    const rows = await query(
+        `SELECT ${expr('ID_', 'id')}, ${expr('TYPE_', 'type')}, ${expr('TIME_', 'time')},
+                ${expr('USER_ID_', 'userId')}, ${expr('TASK_ID_', 'taskId')},
+                ${expr('ACTION_', 'action')}, ${expr('MESSAGE_', 'message')},
+                ${expr('FLOW_STATE_', 'flowState')}
+         FROM act_hi_comment c
+         WHERE c.PROC_INST_ID_ = ?
+         ORDER BY ${order}`,
+        [instanceId]
+    )
+    await ensureUsersFresh()
+    return rows.map((row) => ({ ...row, userLabel: row.userId ? userLabel(row.userId) : null }))
+}
+
+/** Activiti 会把任务事件也写进 act_hi_comment（TYPE_ = 'event'），这些不是审批意见 */
+function isOpinionComment(comment) {
+    return String(comment.type || '').toLowerCase() !== 'event'
+}
+
+/**
+ * 新增 / 修改 / 清空某个历史任务的审批意见。
+ * message 为空表示删除该任务的审批意见（事件类记录保留）。
+ */
+async function saveTaskComment(taskId, payload, executor = null) {
+    if (!hasTable('act_hi_comment')) {
+        throw new ApiError('当前数据库没有审批意见表（act_hi_comment），无法保存审批意见', 400)
+    }
+    const raw = payload.comment === undefined || payload.comment === null ? '' : String(payload.comment)
+    const message = raw.trim()
+    if (message.length > 4000) throw new ApiError('审批意见过长，最多 4000 个字符')
+
+    const run = executor ? executor.query.bind(executor) : query
+    const runExecute = executor ? executor.execute.bind(executor) : execute
+
+    const taskRows = await run(
+        'SELECT ID_ AS "id", PROC_INST_ID_ AS "procInstId", ASSIGNEE_ AS "assignee" FROM act_hi_taskinst WHERE ID_ = ?',
+        [taskId]
+    )
+    if (taskRows.length === 0) throw new ApiError('历史任务不存在', 404)
+    const task = taskRows[0]
+
+    const present = await getColumns('act_hi_comment')
+    const has = (name) => present.length === 0 || present.includes(name.toLowerCase())
+    const rows = await run(
+        `SELECT c.ID_ AS "id", ${has('TYPE_') ? 'c.TYPE_' : 'NULL'} AS "type",
+                ${has('TIME_') ? 'c.TIME_' : 'NULL'} AS "time"
+         FROM act_hi_comment c WHERE c.TASK_ID_ = ?`,
+        [taskId]
+    )
+    const latest = rows.filter(isOpinionComment).reduce((best, row) => {
+        if (!best) return row
+        const current = row.time ? new Date(row.time).getTime() : 0
+        const previous = best.time ? new Date(best.time).getTime() : 0
+        return current >= previous ? row : best
+    }, null)
+
+    if (message === '') {
+        if (!latest) return { action: 'unchanged' }
+        const typeFilter = has('TYPE_') ? " AND LOWER(COALESCE(TYPE_, 'comment')) <> 'event'" : ''
+        await runExecute(`DELETE FROM act_hi_comment WHERE TASK_ID_ = ?${typeFilter}`, [taskId])
+        return { action: 'deleted', id: latest.id }
+    }
+
+    if (latest) {
+        // FULL_MSG_ 是 Activiti 的二进制副本，改了 MESSAGE_ 就必须清掉，否则两者不一致
+        const clearFull = has('FULL_MSG_') ? ', FULL_MSG_ = NULL' : ''
+        await runExecute(`UPDATE act_hi_comment SET MESSAGE_ = ?${clearFull} WHERE ID_ = ?`, [message, latest.id])
+        return { action: 'updated', id: latest.id }
+    }
+
+    const insert = await buildInsert('act_hi_comment', [
+        { name: 'ID_', param: newId() },
+        { name: 'TYPE_', literal: "'comment'", optional: true },
+        { name: 'TIME_', param: new Date() },
+        { name: 'USER_ID_', param: payload.userId || task.assignee || null },
+        { name: 'TASK_ID_', param: taskId },
+        { name: 'PROC_INST_ID_', param: task.procInstId },
+        { name: 'ACTION_', literal: "'AddComment'", optional: true },
+        { name: 'MESSAGE_', param: message },
+        { name: 'FULL_MSG_', literal: 'NULL', optional: true }
+    ])
+    await runExecute(insert.sql, insert.params)
+    return { action: 'created' }
 }
 
 // ==================== 历史数据 ====================
@@ -1344,7 +1517,31 @@ async function listHistoryTasks(instanceId) {
          ORDER BY t.START_TIME_ DESC`,
         [instanceId]
     )
-    return rows.map((row) => ({ ...row, assigneeLabel: row.assignee ? userLabel(row.assignee) : null }))
+
+    const byTask = new Map()
+    for (const comment of await listInstanceComments(instanceId)) {
+        if (!comment.taskId) continue
+        const key = String(comment.taskId)
+        if (!byTask.has(key)) byTask.set(key, [])
+        byTask.get(key).push(comment)
+    }
+
+    return rows.map((row) => {
+        const all = byTask.get(String(row.id)) || []
+        const opinions = all.filter(isOpinionComment)
+        const latest = opinions.length > 0 ? opinions[opinions.length - 1] : null
+        return {
+            ...row,
+            assigneeLabel: row.assignee ? userLabel(row.assignee) : null,
+            comment: latest ? latest.message : null,
+            commentId: latest ? latest.id : null,
+            commentTime: latest ? latest.time : null,
+            commentUser: latest ? latest.userId : null,
+            commentUserLabel: latest ? latest.userLabel : null,
+            commentCount: opinions.length,
+            comments: all
+        }
+    })
 }
 
 async function listActivities(instanceId) {
@@ -1365,7 +1562,7 @@ async function listActivities(instanceId) {
 async function updateHistoryTask(taskId, payload) {
     if (!hasTable('act_hi_taskinst')) throw new ApiError('当前数据库没有历史任务表')
     const rows = await query(
-        'SELECT ID_ AS "id", NAME_ AS "name", ASSIGNEE_ AS "assignee", START_TIME_ AS "startTime", END_TIME_ AS "endTime", PROC_INST_ID_ AS "procInstId" FROM act_hi_taskinst WHERE ID_ = ?',
+        'SELECT ID_ AS "id", NAME_ AS "name", ASSIGNEE_ AS "assignee", START_TIME_ AS "startTime", END_TIME_ AS "endTime", DELETE_REASON_ AS "deleteReason", PROC_INST_ID_ AS "procInstId" FROM act_hi_taskinst WHERE ID_ = ?',
         [taskId]
     )
     if (rows.length === 0) throw new ApiError('历史任务不存在', 404)
@@ -1373,14 +1570,19 @@ async function updateHistoryTask(taskId, payload) {
 
     const name = payload.name === undefined ? task.name : requireString(payload.name, '任务名称')
     const assignee = payload.assignee === undefined ? task.assignee : (payload.assignee || null)
-    const endTime = payload.endTime === undefined ? task.endTime : (payload.endTime ? new Date(payload.endTime) : null)
-    const deleteReason = payload.deleteReason === undefined ? null : (payload.deleteReason || null)
+    // 库里的时间经过 convertRow 可能是 ISO 字符串，必须先转成 Date 再算时长
+    const rawEndTime = payload.endTime === undefined ? task.endTime : payload.endTime
+    const endTime = rawEndTime ? new Date(rawEndTime) : null
+    // 未传删除原因时保留原值，避免“只改审批意见”把已有原因清掉
+    const deleteReason = payload.deleteReason === undefined
+        ? (task.deleteReason || null)
+        : (String(payload.deleteReason).trim().slice(0, 4000) || null)
 
     if (endTime && Number.isNaN(endTime.getTime())) throw new ApiError('审批时间格式不正确')
     const startTime = task.startTime ? new Date(task.startTime) : null
     const duration = startTime && endTime ? Math.max(0, endTime.getTime() - startTime.getTime()) : null
 
-    await withTransaction(async (tx) => {
+    return await withTransaction(async (tx) => {
         await tx.execute(
             'UPDATE act_hi_taskinst SET NAME_ = ?, ASSIGNEE_ = ?, END_TIME_ = ?, DURATION_ = ?, DELETE_REASON_ = ? WHERE ID_ = ?',
             [name, assignee, endTime, duration, deleteReason, taskId]
@@ -1394,6 +1596,14 @@ async function updateHistoryTask(taskId, payload) {
         if (hasTable('act_hi_actinst')) {
             await tx.execute('UPDATE act_hi_actinst SET ASSIGNEE_ = ? WHERE TASK_ID_ = ?', [assignee, taskId])
         }
+        if (payload.comment !== undefined) {
+            return await saveTaskComment(
+                taskId,
+                { comment: payload.comment, userId: payload.commentUserId || assignee },
+                tx
+            )
+        }
+        return { action: 'unchanged' }
     })
 }
 
@@ -1593,19 +1803,26 @@ async function ensureExecution(tx, instanceId, proc, executionId) {
     const existing = await tx.query('SELECT ID_ AS "id" FROM act_ru_execution WHERE ID_ = ?', [executionId])
     if (existing.length > 0) return executionId
 
-    await tx.execute(
-        `INSERT INTO act_ru_execution
-            (ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_, ACT_ID_, IS_ACTIVE_,
-             IS_CONCURRENT_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_, SUSPENSION_STATE_, TENANT_ID_,
-             START_TIME_, START_USER_ID_, IS_COUNT_ENABLED_)
-         VALUES (?, 1, ?, ?, ?, ?, ?, ${boolLiteral(true)}, ${boolLiteral(false)}, ${boolLiteral(false)},
-                 ${boolLiteral(false)}, ${boolLiteral(false)}, 1, ?, ?, ?, ${boolLiteral(true)})`,
-        [
-            executionId, instanceId, proc.businessKey, instanceId, proc.procDefId,
-            proc.activityId || null, proc.tenantId || '', proc.startTime,
-            proc.startUserId
-        ]
-    )
+    const insert = await buildInsert('act_ru_execution', [
+        { name: 'ID_', param: executionId },
+        { name: 'REV_', literal: '1' },
+        { name: 'PROC_INST_ID_', param: instanceId },
+        { name: 'BUSINESS_KEY_', param: proc.businessKey },
+        { name: 'PARENT_ID_', param: instanceId },
+        { name: 'PROC_DEF_ID_', param: proc.procDefId },
+        { name: 'ACT_ID_', param: proc.activityId || null },
+        { name: 'IS_ACTIVE_', literal: boolLiteral(true) },
+        { name: 'IS_CONCURRENT_', literal: boolLiteral(false) },
+        { name: 'IS_SCOPE_', literal: boolLiteral(false) },
+        { name: 'IS_EVENT_SCOPE_', literal: boolLiteral(false) },
+        { name: 'IS_MI_ROOT_', literal: boolLiteral(false) },
+        { name: 'SUSPENSION_STATE_', literal: '1' },
+        { name: 'TENANT_ID_', param: proc.tenantId || '', optional: true },
+        { name: 'START_TIME_', param: proc.startTime },
+        { name: 'START_USER_ID_', param: proc.startUserId },
+        { name: 'IS_COUNT_ENABLED_', literal: boolLiteral(true) }
+    ])
+    await tx.execute(insert.sql, insert.params)
     return executionId
 }
 
@@ -1663,36 +1880,54 @@ async function resetRuntime(tx, instanceId, proc, activityId) {
                 [activityId, proc.procDefId, proc.businessKey, proc.startTime, proc.startUserId, instanceId]
             )
         } else {
-            await tx.execute(
-                `INSERT INTO act_ru_execution
-                    (ID_, REV_, PROC_INST_ID_, BUSINESS_KEY_, PARENT_ID_, PROC_DEF_ID_, ACT_ID_, IS_ACTIVE_,
-                     IS_CONCURRENT_, IS_SCOPE_, IS_EVENT_SCOPE_, IS_MI_ROOT_, SUSPENSION_STATE_, TENANT_ID_,
-                     START_TIME_, START_USER_ID_, IS_COUNT_ENABLED_)
-                 VALUES (?, 1, ?, ?, NULL, ?, ?, ${boolLiteral(true)}, ${boolLiteral(false)}, ${boolLiteral(true)},
-                         ${boolLiteral(false)}, ${boolLiteral(false)}, 1, ?, ?, ?, ${boolLiteral(true)})`,
-                [
-                    instanceId, instanceId, proc.businessKey, proc.procDefId, activityId,
-                    proc.tenantId || '', proc.startTime, proc.startUserId
-                ]
-            )
+            const insert = await buildInsert('act_ru_execution', [
+                { name: 'ID_', param: instanceId },
+                { name: 'REV_', literal: '1' },
+                { name: 'PROC_INST_ID_', param: instanceId },
+                { name: 'BUSINESS_KEY_', param: proc.businessKey },
+                { name: 'PARENT_ID_', literal: 'NULL' },
+                { name: 'PROC_DEF_ID_', param: proc.procDefId },
+                { name: 'ACT_ID_', param: activityId },
+                { name: 'IS_ACTIVE_', literal: boolLiteral(true) },
+                { name: 'IS_CONCURRENT_', literal: boolLiteral(false) },
+                { name: 'IS_SCOPE_', literal: boolLiteral(true) },
+                { name: 'IS_EVENT_SCOPE_', literal: boolLiteral(false) },
+                { name: 'IS_MI_ROOT_', literal: boolLiteral(false) },
+                { name: 'SUSPENSION_STATE_', literal: '1' },
+                { name: 'TENANT_ID_', param: proc.tenantId || '', optional: true },
+                { name: 'START_TIME_', param: proc.startTime },
+                { name: 'START_USER_ID_', param: proc.startUserId },
+                { name: 'IS_COUNT_ENABLED_', literal: boolLiteral(true) }
+            ])
+            await tx.execute(insert.sql, insert.params)
         }
     }
 }
 
 async function insertRuntimeTask(tx, task) {
-    await tx.execute(
-        `INSERT INTO act_ru_task
-            (ID_, REV_, EXECUTION_ID_, PROC_INST_ID_, PROC_DEF_ID_, NAME_, PARENT_TASK_ID_, DESCRIPTION_,
-             TASK_DEF_KEY_, OWNER_, ASSIGNEE_, DELEGATION_, PRIORITY_, CREATE_TIME_, DUE_DATE_, CATEGORY_,
-             SUSPENSION_STATE_, TENANT_ID_, FORM_KEY_, CLAIM_TIME_)
-         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 1, ?, ?, NULL)`,
-        [
-            task.id, task.executionId, task.instanceId, task.procDefId, task.name || null,
-            task.parentTaskId || null, task.description || null, task.taskDefKey || null,
-            task.owner || null, task.assignee || null, task.priority || 50, new Date(),
-            task.dueDate || null, task.category || null, task.tenantId || '', task.formKey || null
-        ]
-    )
+    const insert = await buildInsert('act_ru_task', [
+        { name: 'ID_', param: task.id },
+        { name: 'REV_', literal: '1' },
+        { name: 'EXECUTION_ID_', param: task.executionId },
+        { name: 'PROC_INST_ID_', param: task.instanceId },
+        { name: 'PROC_DEF_ID_', param: task.procDefId },
+        { name: 'NAME_', param: task.name || null },
+        { name: 'PARENT_TASK_ID_', param: task.parentTaskId || null },
+        { name: 'DESCRIPTION_', param: task.description || null },
+        { name: 'TASK_DEF_KEY_', param: task.taskDefKey || null },
+        { name: 'OWNER_', param: task.owner || null },
+        { name: 'ASSIGNEE_', param: task.assignee || null },
+        { name: 'DELEGATION_', literal: 'NULL' },
+        { name: 'PRIORITY_', param: task.priority || 50 },
+        { name: 'CREATE_TIME_', param: new Date() },
+        { name: 'DUE_DATE_', param: task.dueDate || null },
+        { name: 'CATEGORY_', param: task.category || null },
+        { name: 'SUSPENSION_STATE_', literal: '1' },
+        { name: 'TENANT_ID_', param: task.tenantId || '', optional: true },
+        { name: 'FORM_KEY_', param: task.formKey || null },
+        { name: 'CLAIM_TIME_', literal: 'NULL' }
+    ])
+    await tx.execute(insert.sql, insert.params)
 }
 
 async function insertCandidateLinks(tx, instanceId, taskId, candidates) {
@@ -1739,16 +1974,22 @@ async function restoreVariables(tx, instanceId, options = {}) {
             kept += 1
             continue
         }
-        await tx.execute(
-            `INSERT INTO act_ru_variable
-                (ID_, REV_, TYPE_, NAME_, EXECUTION_ID_, PROC_INST_ID_, TASK_ID_, BYTEARRAY_ID_,
-                 DOUBLE_, LONG_, TEXT_, TEXT2_, TENANT_ID_)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
-            [
-                row.id || newId(), row.rev || 1, row.varType || 'string', row.name, instanceId, instanceId,
-                row.taskId || null, row.byteArrayId || null, row.double, row.long, row.text, row.text2
-            ]
-        )
+        const insert = await buildInsert('act_ru_variable', [
+            { name: 'ID_', param: row.id || newId() },
+            { name: 'REV_', param: row.rev || 1 },
+            { name: 'TYPE_', param: row.varType || 'string' },
+            { name: 'NAME_', param: row.name },
+            { name: 'EXECUTION_ID_', param: instanceId },
+            { name: 'PROC_INST_ID_', param: instanceId },
+            { name: 'TASK_ID_', param: row.taskId || null },
+            { name: 'BYTEARRAY_ID_', param: row.byteArrayId || null },
+            { name: 'DOUBLE_', param: row.double },
+            { name: 'LONG_', param: row.long },
+            { name: 'TEXT_', param: row.text },
+            { name: 'TEXT2_', param: row.text2 },
+            { name: 'TENANT_ID_', literal: "''", optional: true }
+        ])
+        await tx.execute(insert.sql, insert.params)
         restored += 1
     }
     return { restored, kept }
@@ -1770,6 +2011,9 @@ async function deleteHistoryAfter(tx, instanceId, targetTaskId, targetStartTime)
         }
         if (hasTable('act_hi_actinst')) {
             await tx.execute(`DELETE FROM act_hi_actinst WHERE TASK_ID_ IN (${marks})`, toDelete)
+        }
+        if (hasTable('act_hi_comment')) {
+            await tx.execute(`DELETE FROM act_hi_comment WHERE TASK_ID_ IN (${marks})`, toDelete)
         }
         await tx.execute(`DELETE FROM act_hi_taskinst WHERE ID_ IN (${marks})`, toDelete)
     }
@@ -1963,24 +2207,37 @@ async function jumpToActivity(instanceId, activityId) {
 
         const now = new Date()
         if (hasTable('act_hi_taskinst')) {
-            await tx.execute(
-                `INSERT INTO act_hi_taskinst
-                    (ID_, PROC_DEF_ID_, TASK_DEF_KEY_, PROC_INST_ID_, EXECUTION_ID_, NAME_, ASSIGNEE_,
-                     START_TIME_, PRIORITY_, TENANT_ID_)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 50, ?)`,
-                [taskId, definitionId, activityId, instanceId, instanceId, node.name || activityId,
-                    assignment.assignee, now, proc.tenantId || '']
-            )
+            const historyTask = await buildInsert('act_hi_taskinst', [
+                { name: 'ID_', param: taskId },
+                { name: 'PROC_DEF_ID_', param: definitionId },
+                { name: 'TASK_DEF_KEY_', param: activityId },
+                { name: 'PROC_INST_ID_', param: instanceId },
+                { name: 'EXECUTION_ID_', param: instanceId },
+                { name: 'NAME_', param: node.name || activityId },
+                { name: 'ASSIGNEE_', param: assignment.assignee },
+                { name: 'START_TIME_', param: now },
+                { name: 'PRIORITY_', literal: '50' },
+                { name: 'TENANT_ID_', param: proc.tenantId || '', optional: true }
+            ])
+            await tx.execute(historyTask.sql, historyTask.params)
         }
         if (hasTable('act_hi_actinst')) {
-            await tx.execute(
-                `INSERT INTO act_hi_actinst
-                    (ID_, PROC_DEF_ID_, PROC_INST_ID_, EXECUTION_ID_, ACT_ID_, TASK_ID_, ACT_NAME_, ACT_TYPE_,
-                     ASSIGNEE_, START_TIME_, END_TIME_, DURATION_, TENANT_ID_)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 'userTask', ?, ?, NULL, NULL, ?)`,
-                [newId(), definitionId, instanceId, instanceId, activityId, taskId, node.name || activityId,
-                    assignment.assignee, now, proc.tenantId || '']
-            )
+            const historyActivity = await buildInsert('act_hi_actinst', [
+                { name: 'ID_', param: newId() },
+                { name: 'PROC_DEF_ID_', param: definitionId },
+                { name: 'PROC_INST_ID_', param: instanceId },
+                { name: 'EXECUTION_ID_', param: instanceId },
+                { name: 'ACT_ID_', param: activityId },
+                { name: 'TASK_ID_', param: taskId },
+                { name: 'ACT_NAME_', param: node.name || activityId },
+                { name: 'ACT_TYPE_', literal: "'userTask'" },
+                { name: 'ASSIGNEE_', param: assignment.assignee },
+                { name: 'START_TIME_', param: now },
+                { name: 'END_TIME_', literal: 'NULL' },
+                { name: 'DURATION_', literal: 'NULL' },
+                { name: 'TENANT_ID_', param: proc.tenantId || '', optional: true }
+            ])
+            await tx.execute(historyActivity.sql, historyActivity.params)
         }
         if (hasTable('act_hi_procinst')) {
             await tx.execute(
@@ -2045,7 +2302,7 @@ async function listDefinitions(keyword = '') {
 
 async function updateDefinitionXml(definitionId, xml) {
     if (typeof xml !== 'string' || xml.trim() === '') throw new ApiError('XML 内容不能为空')
-    if (!/<definitions[\s>]/.test(xml) || !/<process[\s>]/.test(xml)) {
+    if (!/<(?:\w+:)?definitions[\s>]/.test(xml) || !/<(?:\w+:)?process[\s>]/.test(xml)) {
         throw new ApiError('XML 内容不完整：必须包含 definitions 与 process 节点')
     }
 
@@ -2089,26 +2346,49 @@ async function listJobs(options = {}) {
     const jobs = []
     for (const source of JOB_SOURCES) {
         if (!hasTable(source.table)) continue
-        const params = []
-        const conditions = []
-        if (keyword) {
-            const kw = `%${keyword}%`
-            conditions.push(
-                `(ID_ ${likeOp()} ? OR PROCESS_INSTANCE_ID_ ${likeOp()} ? OR EXCEPTION_MSG_ ${likeOp()} ? OR HANDLER_TYPE_ ${likeOp()} ?)`
-            )
-            params.push(kw, kw, kw, kw)
-        }
-        if (onlyFailed) conditions.push('RETRIES_ <= 0')
-        const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-
         try {
+            // 作业表各项差异很大：Activiti 6.0 用 PROC_DEF_ID_，改造库可能沿用 Flowable 的
+            // PROCESS_DEFINITION_ID_；act_ru_deadletter_job 又没有 RETRIES_ / LOCK_OWNER_。
+            const columns = await getColumns(source.table)
+            const col = (candidates, alias) => {
+                const name = pickColumn(columns, candidates)
+                return name ? `${name} AS "${alias}"` : `NULL AS "${alias}"`
+            }
+
+            const params = []
+            const conditions = []
+            if (keyword) {
+                const kw = `%${keyword}%`
+                const parts = ['ID_', 'PROCESS_INSTANCE_ID_', 'EXCEPTION_MSG_', 'HANDLER_TYPE_']
+                    .filter((name) => pickColumn(columns, [name]))
+                    .map((name) => `${name} ${likeOp()} ?`)
+                if (parts.length > 0) {
+                    conditions.push(`(${parts.join(' OR ')})`)
+                    parts.forEach(() => params.push(kw))
+                }
+            }
+            if (onlyFailed && pickColumn(columns, ['RETRIES_'])) conditions.push('RETRIES_ <= 0')
+            const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+            const orderSql = pickColumn(columns, ['DUEDATE_']) ? 'DUEDATE_ ASC' : 'ID_ ASC'
+
+            const select = [
+                col(['ID_'], 'id'),
+                col(['TYPE_'], 'type'),
+                col(['RETRIES_'], 'retries'),
+                col(['EXCEPTION_MSG_'], 'exceptionMessage'),
+                col(['DUEDATE_'], 'dueDate'),
+                col(['PROCESS_INSTANCE_ID_'], 'processInstanceId'),
+                col(['EXECUTION_ID_'], 'executionId'),
+                col(['PROC_DEF_ID_', 'PROCESS_DEFINITION_ID_'], 'processDefinitionId'),
+                col(['HANDLER_TYPE_'], 'handlerType'),
+                col(['LOCK_OWNER_'], 'lockOwner'),
+                col(['TENANT_ID_'], 'tenantId')
+            ]
+
             const rows = await query(
-                `SELECT ID_ AS "id", TYPE_ AS "type", RETRIES_ AS "retries", EXCEPTION_MSG_ AS "exceptionMessage",
-                        DUEDATE_ AS "dueDate", PROCESS_INSTANCE_ID_ AS "processInstanceId",
-                        EXECUTION_ID_ AS "executionId", PROCESS_DEFINITION_ID_ AS "processDefinitionId",
-                        HANDLER_TYPE_ AS "handlerType", LOCK_OWNER_ AS "lockOwner", TENANT_ID_ AS "tenantId"
+                `SELECT ${select.join(', ')}
                  FROM ${source.table} ${whereSql}
-                 ORDER BY DUEDATE_ ASC
+                 ORDER BY ${orderSql}
                  LIMIT ${limit}`,
                 params
             )
@@ -2151,6 +2431,9 @@ async function setJobRetries(jobId, source, retries) {
     const jobSource = getJobSource(source)
     const value = toInt(retries, 3)
     if (value < 0 || value > 100) throw new ApiError('重试次数需要在 0 - 100 之间')
+    if (!(await hasColumn(jobSource.table, 'RETRIES_'))) {
+        throw new ApiError(`${jobSource.label}表没有重试次数字段，不支持重置重试`)
+    }
     const result = await execute(`UPDATE ${jobSource.table} SET RETRIES_ = ? WHERE ID_ = ?`, [value, jobId])
     if (result.affectedRows === 0) throw new ApiError('作业不存在', 404)
 }
@@ -2565,16 +2848,16 @@ app.post('/api/instances/:id/jump-to-activity', requireConnection, wrap(async (r
 }))
 
 app.put('/api/history-tasks/:taskId', requireConnection, wrap(async (req, res) => {
-    await updateHistoryTask(req.params.taskId, req.body || {})
+    const result = await updateHistoryTask(req.params.taskId, req.body || {})
     logAudit('修改历史任务', req.params.taskId)
-    res.json({ success: true })
+    res.json({ success: true, ...(result || {}) })
 }))
 
 // 兼容旧前端调用
 app.put('/api/history-tasks/:taskId/assignee', requireConnection, wrap(async (req, res) => {
-    await updateHistoryTask(req.params.taskId, req.body || {})
+    const result = await updateHistoryTask(req.params.taskId, req.body || {})
     logAudit('修改历史任务', req.params.taskId)
-    res.json({ success: true })
+    res.json({ success: true, ...(result || {}) })
 }))
 
 // ---- 任务 ----
@@ -2813,6 +3096,8 @@ module.exports = {
         toPgSql,
         toCamelCase,
         convertRow,
+        buildInsert,
+        columnCache,
         parseBpmnNodes,
         parseAttributes,
         normalizeConfig,

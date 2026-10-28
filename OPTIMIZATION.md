@@ -37,6 +37,8 @@
 | PostgreSQL 的 `timestamp without time zone` 被当成 UTC | 东八区页面时间多 8 小时 |
 | 前端与 HTML 结构不匹配（缺少 `connDatabase`、`assigneeModal` 等节点） | 页面初始化即报错，无法使用 |
 | 用户下拉框、任务名通过内联 `onclick` 拼接 | 名称含引号时页面错乱，且有 XSS 风险 |
+| 写变量时固定拼接 `TENANT_ID_` | 标准 Activiti 6.0 的 `act_ru_variable` / `act_hi_varinst` 没有该列，跳转节点、新增变量报 `42703 column "TENANT_ID_" ... does not exist` |
+| 作业查询固定用 `PROCESS_DEFINITION_ID_`、`RETRIES_`、`LOCK_OWNER_` | Activiti 6.0 实际是 `PROC_DEF_ID_`，且 `act_ru_deadletter_job` 没有 `RETRIES_` / `LOCK_OWNER_`，作业页恒为空 |
 
 ## 二、新增业务功能
 
@@ -56,6 +58,8 @@
 ## 三、容错与安全
 
 - 表可用性探测：连接时缓存当前 schema 的表集合，可选表（作业、事件订阅、评论等）缺失时跳过而不是报错
+- 列结构自适应：INSERT 在运行期按真实列探测（`information_schema` 失败时回落到 `SELECT * ... WHERE 1 = 0` 读驱动元数据），自动裁剪当前库不存在的可选列（`TENANT_ID_` 等），同一份代码同时适配标准 6.0 与定制库，列名和参数一一对应不会错位
+- 字段命名差异统一走候选列选择：`PROC_DEF_ID_` / `PROCESS_DEFINITION_ID_`、`DUEDATE_`、`LOCK_OWNER_` 等缺失时降级为 `NULL`，不再整条查询失败
 - 用户表列名自动识别，`sys_user` 缺失时降级显示用户 ID，并在页面提示
 - 数据库列表 / Schema 列表失败时给出明确文案，不影响已保存配置
 - 服务端校验：分页大小上限 200、字符串长度、变量类型与取值范围、BPMN 关键字、迁移时流程 Key 一致性

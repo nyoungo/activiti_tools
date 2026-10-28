@@ -1087,6 +1087,34 @@ textarea {
     word-break: break-all;
 }
 
+.cell-comment {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-2);
+    text-align: left;
+    /* 单行展示：用普通空白处理，避免模板缩进/意见中的换行被 pre-wrap 当成空首行，导致只显示省略号 */
+    white-space: normal;
+    /* 超长无空格内容（URL、令牌等）也要按字符截断 */
+    word-break: break-all;
+}
+
+.cell-comment-label {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--primary-soft);
+    color: var(--primary-600);
+    font-size: 11px;
+    line-height: 18px;
+    vertical-align: 1px;
+}
+
 .var-value {
     max-width: 360px;
     word-break: break-word;
@@ -1506,6 +1534,63 @@ textarea {
     box-shadow: 0 0 0 3px rgba(59, 91, 253, 0.2);
 }
 
+/* ============================ 流程图（bpmn-js） ============================ */
+
+.bpmn-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.bpmn-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.bpmn-toolbar .spacer {
+    flex: 1;
+}
+
+.bpmn-dirty {
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: #8a5a10;
+    font-size: 11px;
+    line-height: 20px;
+}
+
+.bpmn-pane {
+    position: relative;
+    height: 56vh;
+    min-height: 380px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+}
+
+#drawerRoot .bpmn-pane {
+    height: 54vh;
+    min-height: 340px;
+}
+
+.bpmn-canvas {
+    position: absolute;
+    inset: 0;
+}
+
+.bpmn-pane .code-editor {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+    resize: none;
+}
+
 .notice {
     display: flex;
     flex-direction: column;
@@ -1642,6 +1727,12 @@ textarea {
 .modal-sm { max-width: 470px; }
 .modal-md { max-width: 680px; }
 .modal-lg { max-width: 1000px; }
+.modal-xl { max-width: 1320px; }
+
+/* 确认框独立图层，叠加在普通弹层之上 */
+.dialog-root {
+    z-index: 90;
+}
 
 .modal-head {
     display: flex;
