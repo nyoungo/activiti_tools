@@ -1,1076 +1,2118 @@
-// API 封装
-const api = {
-    async request(url, options = {}) {
-        const response = await fetch(url, {
-            headers: { 'Content-Type': 'application/json', ...options.headers },
-            ...options
-        })
-        return response.json()
-    },
-    async get(url) { return this.request(url) },
-    async post(url, data) {
-        return this.request(url, { method: 'POST', body: JSON.stringify(data) })
-    },
-    async put(url, data) {
-        return this.request(url, { method: 'PUT', body: JSON.stringify(data) })
-    },
-    async delete(url) {
-        return this.request(url, { method: 'DELETE' })
-    }
+'use strict'
+
+/* =========================================================
+ * Activiti 工作流运维工具 - 前端
+ * 所有数据通过 /api 获取；操作统一使用 data-action 委托
+ * ========================================================= */
+
+const $ = (id) => document.getElementById(id)
+const enc = encodeURIComponent
+
+const VIEW_META = {
+    overview: { title: '概览', subtitle: '当前数据库的工作流运行状况与异常概览' },
+    instances: { title: '流程实例', subtitle: '查询、挂起、终止、变更版本，或跳转到指定节点' },
+    tasks: { title: '待办任务', subtitle: '维护处理人、候选人与任务挂起状态' },
+    definitions: { title: '流程定义', subtitle: '查看各版本流程图，调整挂起状态与 BPMN 内容' },
+    jobs: { title: '定时作业', subtitle: '处理失败重试为 0 的异步作业与定时器' },
+    audit: { title: '操作日志', subtitle: '本工具执行过的所有高危操作记录' }
 }
 
-// 应用状态
+const TYPE_LABEL = { mysql: 'MySQL', postgres: 'PostgreSQL', hgdatabase: '瀚高数据库' }
+
+const NODE_TYPE_LABEL = {
+    userTask: '用户任务',
+    serviceTask: '服务任务',
+    scriptTask: '脚本任务',
+    manualTask: '手工任务',
+    businessRuleTask: '规则任务',
+    sendTask: '发送任务',
+    receiveTask: '接收任务',
+    callActivity: '调用子流程',
+    subProcess: '子流程',
+    startEvent: '开始事件',
+    endEvent: '结束事件',
+    exclusiveGateway: '排他网关',
+    parallelGateway: '并行网关',
+    inclusiveGateway: '包容网关',
+    eventBasedGateway: '事件网关',
+    complexGateway: '复杂网关',
+    intermediateCatchEvent: '中间捕获事件',
+    intermediateThrowEvent: '中间抛出事件',
+    boundaryEvent: '边界事件'
+}
+
 const state = {
     connected: false,
-    currentPage: 1,
-    pageSize: 10,
-    searchKeyword: '',
-    currentInstanceId: null,
-    instanceTab: 'running',
-    currentDefinitionId: null,
-    originalXml: null
+    connection: null,
+    userTable: true,
+    users: [],
+    userIndex: new Map(),
+    definitions: [],
+    configs: [],
+    configId: null,
+    view: 'overview',
+    instanceStatus: 'running',
+    instanceKeyword: '',
+    instanceDefKey: '',
+    instancePage: 1,
+    instanceSize: 10,
+    taskKeyword: '',
+    taskAssignee: '',
+    taskDefKey: '',
+    taskPage: 1,
+    taskSize: 10,
+    definitionKeyword: '',
+    jobKeyword: '',
+    jobState: '',
+    detailId: null,
+    detail: null,
+    detailTab: 'overview',
+    detailData: { variables: [], history: [], activities: [], xml: null },
+    modalTask: null
 }
 
-// DOM 元素
-const elements = {
-    pages: document.querySelectorAll('.page'),
-    statusDot: document.querySelector('.status-dot'),
-    statusText: document.getElementById('statusText'),
-    savedConnections: document.getElementById('savedConnections'),
-    deleteConnection: document.getElementById('deleteConnection'),
-    connName: document.getElementById('connName'),
-    connType: document.getElementById('connType'),
-    connHost: document.getElementById('connHost'),
-    connPort: document.getElementById('connPort'),
-    connDatabase: document.getElementById('connDatabase'),
-    connSchema: document.getElementById('connSchema'),
-    connUsername: document.getElementById('connUsername'),
-    connPassword: document.getElementById('connPassword'),
-    testConnection: document.getElementById('testConnection'),
-    saveConnection: document.getElementById('saveConnection'),
-    connect: document.getElementById('connect'),
-    disconnect: document.getElementById('disconnect'),
-    connectionMessage: document.getElementById('connectionMessage'),
-    searchKeyword: document.getElementById('searchKeyword'),
-    searchBtn: document.getElementById('searchBtn'),
-    instancesTableBody: document.getElementById('instancesTableBody'),
-    pagination: document.getElementById('pagination'),
-    instanceModal: document.getElementById('instanceModal'),
-    instanceModalBody: document.getElementById('instanceModalBody'),
-    assigneeModal: document.getElementById('assigneeModal'),
-    assigneeTaskId: document.getElementById('assigneeTaskId'),
-    assigneeTaskName: document.getElementById('assigneeTaskName'),
-    currentAssignee: document.getElementById('currentAssignee'),
-    newAssignee: document.getElementById('newAssignee'),
-    candidateUserId: document.getElementById('candidateUserId'),
-    candidateType: document.getElementById('candidateType'),
-    identityLinkList: document.getElementById('identityLinkList'),
-    xmlModal: document.getElementById('xmlModal'),
-    xmlContent: document.getElementById('xmlContent'),
-    xmlActions: document.getElementById('xmlActions')
+/* ============================ 工具函数 ============================ */
+
+function esc(value) {
+    if (value === null || value === undefined) return ''
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]))
 }
 
-// 初始化
-async function init() {
-    bindEvents()
-    resetDatabaseSelection()
-    await checkConnectionStatus()
-    await loadConnections()
+function fmtTime(value) {
+    if (!value) return '—'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '—'
+    return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-// 绑定事件
-function bindEvents() {
-    // 数据库类型切换
-    elements.connType.addEventListener('change', () => {
-        const type = elements.connType.value
-        if (type === 'mysql') {
-            elements.connPort.value = '3306'
-        } else if (type === 'postgres') {
-            elements.connPort.value = '5432'
-        } else if (type === 'hgdatabase') {
-            elements.connPort.value = '5866'
-        }
-        // 重置数据库选择
-        resetDatabaseSelection()
+function toLocalInput(value) {
+    if (!value) return ''
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+    const pad = (num) => String(num).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function fmtDuration(start, end) {
+    if (!start) return '—'
+    const startTime = new Date(start).getTime()
+    const endTime = end ? new Date(end).getTime() : Date.now()
+    if (Number.isNaN(startTime) || Number.isNaN(endTime)) return '—'
+    const seconds = Math.max(0, Math.floor((endTime - startTime) / 1000))
+    if (seconds < 60) return `${seconds} 秒`
+    const minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return `${minutes} 分钟`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours} 小时 ${minutes % 60} 分`
+    const days = Math.floor(hours / 24)
+    return `${days} 天 ${hours % 24} 小时`
+}
+
+function fmtNumber(value) {
+    if (value === null || value === undefined) return '—'
+    return Number(value).toLocaleString('zh-CN')
+}
+
+function userLabel(value) {
+    if (value === null || value === undefined || value === '') return null
+    const key = String(value)
+    const user = state.userIndex.get(key)
+    if (!user) return key
+    return user.realname || user.username || key
+}
+
+function userHint(value) {
+    if (!value) return ''
+    const key = String(value)
+    const user = state.userIndex.get(key)
+    if (!user) return '未在 sys_user 中找到该用户'
+    return `${user.realname || user.username}${user.username ? ` (${user.username})` : ''}`
+}
+
+function instanceBadge(instance) {
+    if (instance.isFinished) return '<span class="badge badge-muted">已结束</span>'
+    if (Number(instance.suspensionState) === 2) return '<span class="badge badge-warn">已挂起</span>'
+    return '<span class="badge badge-success">运行中</span>'
+}
+
+function definitionBadge(definition) {
+    return definition.suspended
+        ? '<span class="badge badge-warn">已挂起</span>'
+        : '<span class="badge badge-success">正常</span>'
+}
+
+function loadingState(text = '加载中…') {
+    return `<div class="state-block"><span class="spinner"></span><p>${esc(text)}</p></div>`
+}
+
+function emptyState(title, hint = '') {
+    return `<div class="state-block"><div class="state-icon">∅</div><p>${esc(title)}</p>${hint ? `<span>${esc(hint)}</span>` : ''}</div>`
+}
+
+function nodeTypeLabel(type) {
+    return NODE_TYPE_LABEL[type] || type || '节点'
+}
+
+function renderUserOptions() {
+    state.userIndex = new Map()
+    state.users.forEach((user) => {
+        if (user.id) state.userIndex.set(String(user.id), user)
+        if (user.username) state.userIndex.set(String(user.username), user)
     })
-
-    // 已保存的配置
-    elements.savedConnections.addEventListener('change', () => {
-        const id = elements.savedConnections.value
-        elements.deleteConnection.style.display = id ? 'inline-block' : 'none'
-        if (id) loadConnectionById(parseInt(id))
-    })
-
-    // 删除配置
-    elements.deleteConnection.addEventListener('click', deleteCurrentConnection)
-
-    // 获取数据库列表
-    elements.testConnection.addEventListener('click', getDatabaseList)
-
-    // 数据库选择变化
-    elements.connDatabase.addEventListener('change', onDatabaseSelect)
-
-    // 保存配置
-    elements.saveConnection.addEventListener('click', saveConnection)
-
-    // 连接
-    elements.connect.addEventListener('click', connectToDb)
-
-    // 断开
-    elements.disconnect.addEventListener('click', disconnectFromDb)
-
-    // 搜索
-    elements.searchBtn.addEventListener('click', () => {
-        state.searchKeyword = elements.searchKeyword.value
-        state.currentPage = 1
-        loadInstances()
-    })
-    elements.searchKeyword.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') elements.searchBtn.click()
-    })
-
-    // 模态框关闭
-    document.querySelectorAll('.modal-close').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const modal = btn.closest('.modal')
-            if (modal) modal.classList.remove('show')
+    $('userOptions').innerHTML = state.users
+        .map((user) => {
+            const label = user.realname || user.username || user.id
+            const extra = user.username && user.username !== label ? ` (${user.username})` : ''
+            return `<option value="${esc(user.id)}" label="${esc(label + extra)}"></option>`
         })
-    })
-
-
-    // 标签页切换
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'))
-            btn.classList.add('active')
-            state.instanceTab = btn.dataset.tab
-            state.currentPage = 1
-            loadInstances()
-        })
-    })
+        .join('')
 }
 
-// 切换页面
-function switchPage(page) {
-    elements.pages.forEach(p => {
-        p.classList.toggle('active', p.id === `page-${page}`)
-    })
+/* ============================ API ============================ */
 
-    if (page === 'instances' && state.connected) {
-        loadInstances()
-    }
-}
-
-// 检查连接状态
-async function checkConnectionStatus() {
-    const result = await api.get('/api/connection-status')
-    state.connected = result.connected
-    updateConnectionStatus()
-
-    if (state.connected) {
-        switchPage('instances')
-    }
-}
-
-// 更新连接状态显示
-function updateConnectionStatus() {
-    elements.statusDot.classList.toggle('connected', state.connected)
-    elements.statusText.textContent = state.connected ? '已连接' : '未连接'
-    elements.connect.style.display = state.connected ? 'none' : 'inline-block'
-    elements.disconnect.style.display = state.connected ? 'inline-block' : 'none'
-}
-
-// 加载保存的连接配置
-async function loadConnections() {
-    const connections = await api.get('/api/connections')
-    elements.savedConnections.innerHTML = '<option value="">-- 选择配置 --</option>'
-    connections.forEach(conn => {
-        const option = document.createElement('option')
-        option.value = conn.id
-        option.textContent = conn.name
-        option.dataset.config = JSON.stringify(conn)
-        elements.savedConnections.appendChild(option)
-    })
-}
-
-// 加载指定配置
-async function loadConnectionById(id) {
-    const option = elements.savedConnections.querySelector(`option[value="${id}"]`)
-    if (option) {
-        const config = JSON.parse(option.dataset.config)
-        elements.connName.value = config.name
-        elements.connType.value = config.db_type
-        elements.connHost.value = config.host
-        elements.connPort.value = config.port
-        elements.connUsername.value = config.username
-        elements.connPassword.value = ''
-        
-        // 先获取数据库列表
-        const basicConfig = {
-            dbType: config.db_type,
-            host: config.host,
-            port: config.port,
-            username: config.username,
-            password: ''
-        }
-        
-        const result = await api.post('/api/test-basic-connection', basicConfig)
-        if (result.success) {
-            // 填充数据库列表
-            elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
-            result.databases.forEach(db => {
-                elements.connDatabase.innerHTML += `<option value="${db}" ${db === config.database ? 'selected' : ''}>${db}</option>`
+const api = {
+    async request(url, options = {}) {
+        let response
+        try {
+            response = await fetch(url, {
+                headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+                ...options
             })
-            elements.connDatabase.disabled = false
-            document.getElementById('dbSelectionRow').style.display = 'flex'
-            
-            // 如果是PG/瀚高，获取schema列表
-            if (config.db_type !== 'mysql' && config.database) {
-                const schemaConfig = {
-                    dbType: config.db_type,
-                    host: config.host,
-                    port: config.port,
-                    username: config.username,
-                    password: '',
-                    database: config.database
-                }
-                
-                const schemaResult = await api.post('/api/get-schemas', schemaConfig)
-                if (schemaResult.success) {
-                    elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
-                    schemaResult.schemas.forEach(schema => {
-                        elements.connSchema.innerHTML += `<option value="${schema}" ${schema === config.schema ? 'selected' : ''}>${schema}</option>`
-                    })
-                    elements.connSchema.disabled = false
-                    document.getElementById('schemaGroup').style.display = 'block'
-                }
-                
-                // 显示连接按钮
-                if (config.schema) {
-                    document.getElementById('connectBtnGroup').style.display = 'flex'
-                }
-            } else {
-                // MySQL直接显示连接按钮
-                document.getElementById('connectBtnGroup').style.display = 'flex'
+        } catch (error) {
+            throw new Error('无法连接本地服务，请确认程序仍在运行')
+        }
+
+        const text = await response.text()
+        let data = null
+        if (text) {
+            try {
+                data = JSON.parse(text)
+            } catch (error) {
+                data = null
             }
         }
-    }
+
+        if (!response.ok) {
+            const error = new Error((data && data.error) || `请求失败（HTTP ${response.status}）`)
+            error.status = response.status
+            error.data = data
+            throw error
+        }
+        return data
+    },
+    get(url) { return this.request(url) },
+    post(url, body) { return this.request(url, { method: 'POST', body: JSON.stringify(body || {}) }) },
+    put(url, body) { return this.request(url, { method: 'PUT', body: JSON.stringify(body || {}) }) },
+    delete(url) { return this.request(url, { method: 'DELETE' }) }
 }
 
-// 获取当前表单配置
-function getConnectionConfig() {
-    return {
-        name: elements.connName.value,
-        dbType: elements.connType.value,
-        host: elements.connHost.value,
-        port: parseInt(elements.connPort.value) || 3306,
-        database: elements.connDatabase.value,
-        schema: elements.connSchema.value,
-        username: elements.connUsername.value,
-        password: elements.connPassword.value
-    }
-}
+/* ============================ 提示 / 弹层 ============================ */
 
-// 显示消息
-function showMessage(element, text, type = 'success') {
-    element.textContent = text
-    element.className = `message ${type}`
+function toast(message, type = 'info') {
+    const root = $('toastRoot')
+    const item = document.createElement('div')
+    item.className = `toast toast-${type}`
+    item.innerHTML = `<span class="toast-dot"></span><span>${esc(message)}</span>`
+    item.addEventListener('click', () => item.remove())
+    root.appendChild(item)
     setTimeout(() => {
-        element.className = 'message'
-    }, 3000)
+        item.classList.add('toast-out')
+        setTimeout(() => item.remove(), 250)
+    }, type === 'error' ? 6000 : 3600)
 }
 
-// 重置数据库选择
-function resetDatabaseSelection() {
-    elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
-    elements.connDatabase.disabled = true
-    elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
-    elements.connSchema.disabled = true
-    document.getElementById('dbSelectionRow').style.display = 'none'
-    document.getElementById('connectBtnGroup').style.display = 'none'
-    
-    // 根据数据库类型显示/隐藏schema
-    const dbType = elements.connType.value
-    const schemaGroup = document.getElementById('schemaGroup')
-    if (dbType === 'mysql') {
-        schemaGroup.style.display = 'none'
-    } else {
-        schemaGroup.style.display = 'block'
+function handleError(error) {
+    console.error(error)
+    toast(error && error.message ? error.message : '操作失败', 'error')
+    if (error && error.status === 409) {
+        state.connected = false
+        showConnectionScreen()
     }
 }
 
-// 获取数据库列表
-async function getDatabaseList() {
-    const config = getConnectionConfig()
-    // 只传基本连接信息，不传database和schema
-    const basicConfig = {
-        dbType: config.dbType,
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        password: config.password
-    }
-    
-    const result = await api.post('/api/test-basic-connection', basicConfig)
-    if (result.success) {
-        // 填充数据库列表
-        elements.connDatabase.innerHTML = '<option value="">请选择数据库...</option>'
-        result.databases.forEach(db => {
-            elements.connDatabase.innerHTML += `<option value="${db}">${db}</option>`
-        })
-        elements.connDatabase.disabled = false
-        document.getElementById('dbSelectionRow').style.display = 'flex'
-        showMessage(elements.connectionMessage, '连接成功，请选择数据库', 'success')
-    } else {
-        showMessage(elements.connectionMessage, result.message, 'error')
-        resetDatabaseSelection()
+async function withBusy(element, work) {
+    if (!element) return work()
+    element.classList.add('is-busy')
+    element.disabled = true
+    try {
+        return await work()
+    } finally {
+        element.classList.remove('is-busy')
+        element.disabled = false
     }
 }
 
-// 选择数据库后获取schema列表
-async function onDatabaseSelect() {
-    const selectedDb = elements.connDatabase.value
-    if (!selectedDb) {
-        elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
-        elements.connSchema.disabled = true
-        document.getElementById('connectBtnGroup').style.display = 'none'
-        return
+let dialogResolver = null
+
+function modalShell(title, body, footer) {
+    return `
+        <header class="modal-head">
+            <h3>${esc(title)}</h3>
+            <button type="button" class="icon-btn" data-action="modal-close" aria-label="关闭">×</button>
+        </header>
+        <div class="modal-body">${body}</div>
+        ${footer ? `<footer class="modal-foot">${footer}</footer>` : ''}
+    `
+}
+
+function openModal(html, size = 'md') {
+    const root = $('modalRoot')
+    root.hidden = false
+    root.innerHTML = `<div class="modal-backdrop" data-action="modal-close"></div><div class="modal modal-${size}" role="dialog" aria-modal="true">${html}</div>`
+    document.body.classList.add('modal-open')
+}
+
+function closeModal(result = null) {
+    const root = $('modalRoot')
+    const resolve = dialogResolver
+    dialogResolver = null
+    root.hidden = true
+    root.innerHTML = ''
+    document.body.classList.remove('modal-open')
+    if (resolve) resolve(result)
+}
+
+function askDialog(options = {}) {
+    const {
+        title = '确认操作',
+        message = '',
+        label = '',
+        placeholder = '',
+        value = '',
+        confirmText = '确定',
+        cancelText = '取消',
+        danger = false,
+        multiline = false
+    } = options
+
+    return new Promise((resolve) => {
+        dialogResolver = resolve
+        const inputHtml = label
+            ? `<label class="field"><span>${esc(label)}</span>${multiline
+                ? `<textarea id="dialogInput" rows="3" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
+                : `<input id="dialogInput" type="text" placeholder="${esc(placeholder)}" value="${esc(value)}">`
+            }</label>`
+            : ''
+        openModal(modalShell(title, `<div class="dialog-message">${message}</div>${inputHtml}`, `
+            <button type="button" class="btn btn-secondary" data-action="dialog-cancel">${esc(cancelText)}</button>
+            <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-action="dialog-confirm">${esc(confirmText)}</button>
+        `), 'sm')
+
+        const input = $('dialogInput')
+        if (input) {
+            setTimeout(() => {
+                input.focus()
+                if (input.select) input.select()
+            }, 30)
+        }
+    })
+}
+
+/* ============================ 连接页 ============================ */
+
+function setConnMessage(text, type = '') {
+    const el = $('connMessage')
+    el.textContent = text || ''
+    el.className = `form-message ${type}`.trim()
+}
+
+function readConnectionForm() {
+    return {
+        id: state.configId || undefined,
+        name: $('connName').value.trim(),
+        dbType: $('connType').value,
+        host: $('connHost').value.trim() || 'localhost',
+        port: Number($('connPort').value) || defaultPort($('connType').value),
+        database: $('connDatabase').value,
+        schema: $('connSchema').value,
+        username: $('connUser').value.trim(),
+        password: $('connPass').value
     }
-    
-    const dbType = elements.connType.value
-    if (dbType === 'mysql') {
-        // MySQL不需要schema
-        document.getElementById('connectBtnGroup').style.display = 'flex'
-        return
-    }
-    
-    // PostgreSQL/瀚高获取schema列表
-    const config = getConnectionConfig()
-    const schemaConfig = {
+}
+
+function basicConfig() {
+    const config = readConnectionForm()
+    return {
         dbType: config.dbType,
         host: config.host,
         port: config.port,
         username: config.username,
         password: config.password,
-        database: selectedDb
-    }
-    
-    const result = await api.post('/api/get-schemas', schemaConfig)
-    if (result.success) {
-        elements.connSchema.innerHTML = '<option value="">请选择模式...</option>'
-        result.schemas.forEach(schema => {
-            elements.connSchema.innerHTML += `<option value="${schema}">${schema}</option>`
-        })
-        elements.connSchema.disabled = false
-        document.getElementById('schemaGroup').style.display = 'block'
-        showMessage(elements.connectionMessage, '请选择模式', 'success')
-    } else {
-        showMessage(elements.connectionMessage, result.message, 'error')
+        database: config.database
     }
 }
 
-// 监听schema变化
-document.addEventListener('DOMContentLoaded', () => {
-    const connSchema = document.getElementById('connSchema')
-    connSchema.addEventListener('change', () => {
-        if (connSchema.value) {
-            document.getElementById('connectBtnGroup').style.display = 'flex'
-        } else {
-            document.getElementById('connectBtnGroup').style.display = 'none'
+function defaultPort(dbType) {
+    if (dbType === 'mysql') return 3306
+    if (dbType === 'hgdatabase') return 5866
+    return 5432
+}
+
+function resetConnectionForm() {
+    state.configId = null
+    $('connName').value = ''
+    $('connType').value = 'mysql'
+    $('connHost').value = 'localhost'
+    $('connPort').value = '3306'
+    $('connUser').value = ''
+    $('connPass').value = ''
+    $('connDatabase').innerHTML = '<option value="">先测试连接获取数据库</option>'
+    $('connDatabase').disabled = true
+    $('connSchema').innerHTML = '<option value="">先选择数据库</option>'
+    $('connSchema').disabled = true
+    $('schemaField').hidden = true
+    setConnMessage('')
+    renderSavedConnections()
+}
+
+function renderSavedConnections() {
+    const list = $('savedConnectionList')
+    if (!state.configs.length) {
+        list.innerHTML = '<div class="state-block state-block-sm"><p>还没有保存的配置</p><span>填写右侧表单后点击「保存配置」</span></div>'
+        return
+    }
+    list.innerHTML = state.configs.map((config) => `
+        <div class="saved-item ${state.configId === config.id ? 'is-active' : ''}">
+            <button type="button" class="saved-item-main" data-action="conn-pick" data-id="${config.id}" title="载入此配置">
+                <strong>${esc(config.name)}</strong>
+                <span>${esc(TYPE_LABEL[config.db_type] || config.db_type)} · ${esc(config.host)}:${esc(config.port)}/${esc(config.database)}</span>
+            </button>
+            <button type="button" class="icon-btn icon-btn-sm" data-action="conn-delete" data-id="${config.id}" title="删除配置">×</button>
+        </div>
+    `).join('')
+}
+
+async function loadSavedConnections() {
+    try {
+        state.configs = await api.get('/api/connections')
+        renderSavedConnections()
+    } catch (error) {
+        toast(error.message, 'error')
+    }
+}
+
+async function pickConnection(id) {
+    try {
+        const config = await api.get(`/api/connections/${id}`)
+        state.configId = config.id
+        $('connName').value = config.name || ''
+        $('connType').value = config.db_type || 'mysql'
+        $('connHost').value = config.host || ''
+        $('connPort').value = config.port || defaultPort(config.db_type)
+        $('connUser').value = config.username || ''
+        $('connPass').value = config.password || ''
+        $('schemaField').hidden = config.db_type === 'mysql'
+        renderSavedConnections()
+
+        await loadDatabaseList(true)
+        $('connDatabase').value = config.database || ''
+        if (config.db_type !== 'mysql' && config.database) {
+            await loadSchemaList(config.database, true)
+            $('connSchema').value = config.schema || ''
         }
+        setConnMessage('配置已载入，点击「连接数据库」进入工作台', 'success')
+    } catch (error) {
+        setConnMessage(error.message, 'error')
+    }
+}
+
+async function loadDatabaseList(silent = false) {
+    const button = document.querySelector('[data-action="conn-load-databases"]')
+    try {
+        const data = await withBusy(button, () => api.post('/api/test-basic-connection', basicConfig()))
+        const select = $('connDatabase')
+        select.innerHTML = '<option value="">请选择数据库</option>' + (data.databases || [])
+            .map((name) => `<option value="${esc(name)}">${esc(name)}</option>`)
+            .join('')
+        select.disabled = false
+        if (!silent) {
+            setConnMessage(`连接成功，发现 ${(data.databases || []).length} 个数据库`, 'success')
+        }
+        return data.databases || []
+    } catch (error) {
+        if (!silent) setConnMessage(error.message, 'error')
+        throw error
+    }
+}
+
+async function loadSchemaList(database, silent = false) {
+    const config = basicConfig()
+    config.database = database
+    try {
+        const data = await api.post('/api/get-schemas', config)
+        const select = $('connSchema')
+        select.innerHTML = '<option value="">请选择 Schema</option>' + (data.schemas || [])
+            .map((name) => `<option value="${esc(name)}">${esc(name)}</option>`)
+            .join('')
+        select.disabled = false
+        if (!silent) setConnMessage('请选择 Schema', 'success')
+        return data.schemas || []
+    } catch (error) {
+        if (!silent) setConnMessage(error.message, 'error')
+        throw error
+    }
+}
+
+async function testConnection(button) {
+    try {
+        const data = await withBusy(button, () => api.post('/api/test-connection', readConnectionForm()))
+        setConnMessage(`${data.message}（检测到 ${data.tables} 张表）`, 'success')
+        toast('连接测试通过', 'success')
+    } catch (error) {
+        setConnMessage(error.message, 'error')
+        toast('连接测试失败', 'error')
+    }
+}
+
+async function saveConnection(button) {
+    if (!$('connName').value.trim()) {
+        setConnMessage('请填写连接名称', 'error')
+        return
+    }
+    if (!$('connDatabase').value) {
+        setConnMessage('请先选择数据库', 'error')
+        return
+    }
+    try {
+        const config = readConnectionForm()
+        const data = await withBusy(button, () => api.post('/api/connections', config))
+        state.configId = data.id
+        state.configs = await api.get('/api/connections')
+        renderSavedConnections()
+        setConnMessage('配置已保存到本机', 'success')
+        toast('配置已保存', 'success')
+    } catch (error) {
+        setConnMessage(error.message, 'error')
+    }
+}
+
+async function deleteSavedConnection(id) {
+    const target = state.configs.find((item) => item.id === id)
+    const ok = await askDialog({
+        title: '删除连接配置',
+        message: `确定删除配置 <strong>${esc(target ? target.name : id)}</strong> 吗？只会删除本机保存的信息，不会影响数据库。`,
+        confirmText: '删除',
+        danger: true
     })
-})
-
-// 保存配置
-async function saveConnection() {
-    const config = getConnectionConfig()
-    if (!config.name) {
-        showMessage(elements.connectionMessage, '请输入连接名称', 'error')
-        return
-    }
-    const result = await api.post('/api/save-connection', config)
-    if (result.success) {
-        showMessage(elements.connectionMessage, '配置保存成功', 'success')
-        await loadConnections()
-    }
-}
-
-// 删除配置
-async function deleteCurrentConnection() {
-    const id = elements.savedConnections.value
-    if (!id) return
-    if (!confirm('确定删除此配置吗？')) return
-
+    if (ok === null) return
     await api.delete(`/api/connections/${id}`)
-    showMessage(elements.connectionMessage, '配置已删除', 'success')
-    await loadConnections()
-    elements.deleteConnection.style.display = 'none'
+    if (state.configId === id) state.configId = null
+    state.configs = await api.get('/api/connections')
+    renderSavedConnections()
+    toast('配置已删除', 'success')
 }
 
-// 连接数据库
-async function connectToDb() {
-    const config = getConnectionConfig()
-    const result = await api.post('/api/connect', config)
-    if (result.success) {
-        state.connected = true
-        updateConnectionStatus()
-        showMessage(elements.connectionMessage, '连接成功', 'success')
-        switchPage('instances')
-    } else {
-        showMessage(elements.connectionMessage, result.message, 'error')
-    }
-}
-
-// 断开连接
-async function disconnectFromDb() {
-    await api.post('/api/disconnect')
-    state.connected = false
-    updateConnectionStatus()
-    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">请连接数据库</td></tr>'
-    elements.pagination.innerHTML = ''
-    switchPage('connection')
-}
-
-// 加载流程实例
-async function loadInstances() {
-    if (!state.connected) return
-
-    elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center"><span class="loading">加载中...</span></td></tr>'
-
-    const result = await api.get(`/api/instances?page=${state.currentPage}&size=${state.pageSize}&keyword=${encodeURIComponent(state.searchKeyword)}&status=${state.instanceTab}`)
-
-    if (!result || (!result.instances && !result.error)) {
-        elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">加载数据失败</td></tr>'
-        elements.pagination.innerHTML = ''
+async function connectDatabase(button) {
+    const config = readConnectionForm()
+    if (!config.database) {
+        setConnMessage('请先选择数据库', 'error')
         return
     }
-
-    const instances = result.instances || []
-    const total = result.total || 0
-
-    if (instances.length > 0) {
-        elements.instancesTableBody.innerHTML = instances.map(inst => `
-            <tr>
-                <td><code>${inst.id}</code></td>
-                <td>${inst.procDefName || '-'}</td>
-                <td>${inst.businessKey || '-'}</td>
-                <td>${inst.startUserRealname || inst.startUserName || inst.startUserId || '-'}</td>
-                <td>${new Date(inst.startTime).toLocaleString()}</td>
-                <td><span class="status-tag ${inst.isFinished ? 'status-finished' : 'status-running'}">${inst.isFinished ? '已结束' : '运行中'}</span></td>
-                <td>
-                    <button class="btn btn-small btn-primary" onclick="showInstanceDetail('${inst.id}', ${inst.isFinished})">详情</button>
-                    <button class="btn btn-small btn-danger" onclick="deleteInstance('${inst.id}')">删除</button>
-                </td>
-            </tr>
-        `).join('')
-        renderPagination(total)
-    } else {
-        elements.instancesTableBody.innerHTML = '<tr><td colspan="7" class="text-center">暂无数据</td></tr>'
-        renderPagination(total)
+    if (!config.username) {
+        setConnMessage('请填写用户名', 'error')
+        return
+    }
+    try {
+        const data = await withBusy(button, () => api.post('/api/connect', config))
+        setConnMessage(data.message || '连接成功', 'success')
+        await checkConnection()
+        toast('已连接数据库', 'success')
+    } catch (error) {
+        setConnMessage(error.message, 'error')
+        toast('连接失败', 'error')
     }
 }
 
-// 渲染分页
-function renderPagination(total) {
-    const totalPages = Math.max(1, Math.ceil(total / state.pageSize))
-    let html = `<div class="pagination-info">共 ${total} 条记录，第 ${state.currentPage}/${totalPages} 页</div>`
+/* ============================ 工作台 ============================ */
 
-    if (totalPages > 1) {
-        html += `<button onclick="goToPage(${state.currentPage - 1})" ${state.currentPage <= 1 ? 'disabled' : ''}>上一页</button>`
-
-        for (let i = 1; i <= totalPages; i++) {
-            if (i === 1 || i === totalPages || (i >= state.currentPage - 2 && i <= state.currentPage + 2)) {
-                html += `<button class="${i === state.currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`
-            } else if (i === state.currentPage - 3 || i === state.currentPage + 3) {
-                html += '<span>...</span>'
-            }
+async function checkConnection() {
+    try {
+        const status = await api.get('/api/connection-status')
+        if (status.connected) {
+            await enterWorkspace(status)
+            return
         }
-
-        html += `<button onclick="goToPage(${state.currentPage + 1})" ${state.currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`
+    } catch (error) {
+        console.warn(error.message)
     }
-    
-    elements.pagination.innerHTML = html
+    showConnectionScreen()
 }
 
-// 跳转页码
-async function goToPage(page) {
-    if (page < 1) return
-    state.currentPage = page
-    await loadInstances()
+function showConnectionScreen() {
+    state.connected = false
+    state.detail = null
+    $('workspace').hidden = true
+    $('connectionScreen').hidden = false
+    $('drawerRoot').hidden = true
+    document.body.classList.remove('drawer-open')
+    renderSavedConnections()
 }
 
-// 显示流程实例详情
-async function showInstanceDetail(instanceId, isFinished = false) {
-    state.currentInstanceId = instanceId
+async function enterWorkspace(status) {
+    state.connected = true
+    state.connection = status.config || null
+    state.userTable = status.userTable !== false
 
-    const [instance, variables, historyTasks] = await Promise.all([
-        api.get(`/api/instances/${instanceId}`),
-        api.get(`/api/instances/${instanceId}/variables`),
-        api.get(`/api/instances/${instanceId}/history-tasks`)
+    $('connectionScreen').hidden = true
+    $('workspace').hidden = false
+    updateSidebarConnection()
+
+    await loadUsers()
+    await ensureDefinitions()
+    setView(state.view || 'overview')
+}
+
+function updateSidebarConnection() {
+    const config = state.connection || {}
+    $('sidebarConnName').textContent = config.name || '已连接'
+    const database = config.database ? `/${config.database}` : ''
+    const schema = config.schema ? ` · ${config.schema}` : ''
+    $('sidebarConnInfo').textContent = `${TYPE_LABEL[config.dbType] || config.dbType || ''} · ${config.host || ''}:${config.port || ''}${database}${schema}`
+    $('userTableHint').hidden = state.userTable !== false
+}
+
+async function loadUsers() {
+    try {
+        const data = await api.get('/api/users')
+        state.users = data.items || []
+        renderUserOptions()
+    } catch (error) {
+        state.users = []
+        renderUserOptions()
+    }
+}
+
+function setView(view) {
+    if (!VIEW_META[view]) view = 'overview'
+    state.view = view
+    document.querySelectorAll('.view').forEach((section) => {
+        section.hidden = section.id !== `view-${view}`
+    })
+    document.querySelectorAll('.nav-item').forEach((item) => {
+        item.classList.toggle('is-active', item.dataset.nav === view)
+    })
+    $('pageTitle').textContent = VIEW_META[view].title
+    $('pageSubtitle').textContent = VIEW_META[view].subtitle
+    loadView(view).catch(handleError)
+}
+
+async function loadView(view) {
+    if (!state.connected) return
+    if (view === 'overview') return loadOverview()
+    if (view === 'instances') return loadInstances()
+    if (view === 'tasks') return loadTasks()
+    if (view === 'definitions') return loadDefinitionsView()
+    if (view === 'jobs') return loadJobs()
+    if (view === 'audit') return loadAudit()
+}
+
+/* ============================ 概览 ============================ */
+
+async function loadOverview() {
+    $('overviewStats').innerHTML = `<div class="stat-card is-loading"><span class="spinner"></span></div>`.repeat(6)
+
+    const [overview, instances, jobs] = await Promise.all([
+        api.get('/api/overview'),
+        api.get('/api/instances?status=running&size=5').catch(() => ({ items: [] })),
+        api.get('/api/jobs?state=failed&size=5').catch(() => ({ items: [] }))
     ])
 
-    const finishedClass = instance.isFinished ? 'status-finished' : 'status-running'
-    const statusText = instance.isFinished ? '已结束' : '运行中'
+    const cards = [
+        { label: '运行中实例', value: overview.runningInstances, tone: 'blue', nav: 'instances' },
+        { label: '待办任务', value: overview.pendingTasks, tone: 'indigo', nav: 'tasks' },
+        { label: '未分配任务', value: overview.unassignedTasks, tone: 'amber', nav: 'tasks' },
+        { label: '今日已结束', value: overview.finishedToday, tone: 'green', nav: 'instances' },
+        { label: '失败作业', value: overview.failedJobs, tone: 'red', nav: 'jobs' },
+        { label: '流程定义', value: overview.definitions, tone: 'slate', nav: 'definitions' }
+    ]
 
-    elements.instanceModalBody.innerHTML = `
-        <div class="detail-section">
-            <h4>基本信息</h4>
-            <div class="info-grid">
-                <div class="info-item"><label>实例ID</label><span><code>${instance.id}</code></span></div>
-                <div class="info-item"><label>流程名称</label><span>${instance.procDefName || '-'}</span></div>
-                <div class="info-item"><label>业务Key</label><span>${instance.businessKey || '-'}</span></div>
-                <div class="info-item"><label>状态</label><span><span class="status-tag ${finishedClass}">${statusText}</span></span></div>
-                <div class="info-item"><label>开始时间</label><span>${new Date(instance.startTime).toLocaleString()}</span></div>
-                <div class="info-item"><label>发起人</label><span>${instance.startUserRealname || instance.startUserName || instance.startUserId || '-'}</span></div>
-            </div>
-            <div style="margin-top: 16px;">
-                <button class="btn btn-secondary btn-small" onclick="viewDefinitionXml('${instance.procDefId}')">查看流程图</button>
-                ${!isFinished ? '<button class="btn btn-secondary btn-small" onclick="editDefinitionXml(\'' + instance.procDefId + '\')">修改流程图</button>' : ''}
-            </div>
+    $('overviewStats').innerHTML = cards.map((card) => `
+        <button type="button" class="stat-card tone-${card.tone}" data-nav="${card.nav}">
+            <span class="stat-label">${card.label}</span>
+            <strong class="stat-value">${card.value === null ? '—' : fmtNumber(card.value)}</strong>
+            ${card.value === null ? '<span class="stat-hint">该表不可用</span>' : ''}
+        </button>
+    `).join('')
+
+    $('overviewInstances').innerHTML = (instances.items || []).length
+        ? `<ul class="compact-list">${instances.items.map((item) => `
+            <li>
+                <button type="button" class="compact-row" data-action="open-instance" data-id="${esc(item.id)}">
+                    <span class="compact-main">
+                        <strong>${esc(item.procDefName || item.procDefKey || '未命名流程')}</strong>
+                        <span>${esc(item.businessKey || item.id)} · ${esc(item.startUserLabel || item.startUserId || '未知发起人')}</span>
+                    </span>
+                    <span class="compact-side">${esc(fmtTime(item.startTime))}</span>
+                </button>
+            </li>`).join('')}</ul>`
+        : emptyState('暂无运行中的流程')
+
+    $('overviewJobs').innerHTML = (jobs.items || []).length
+        ? `<ul class="compact-list">${jobs.items.map((job) => `
+            <li>
+                <button type="button" class="compact-row" data-action="job-detail" data-id="${esc(job.id)}" data-source="${esc(job.source)}">
+                    <span class="compact-main">
+                        <strong>${esc(job.sourceLabel)} · 重试 ${job.retries === null ? '—' : job.retries}</strong>
+                        <span>${esc(job.exceptionMessage || job.handlerType || '无异常信息')}</span>
+                    </span>
+                    <span class="compact-side">${esc(fmtTime(job.dueDate))}</span>
+                </button>
+            </li>`).join('')}</ul>`
+        : emptyState('没有失败的作业', '所有异步作业与定时器状态正常')
+}
+
+/* ============================ 流程实例 ============================ */
+
+async function loadInstances() {
+    const container = $('instancesTable')
+    container.innerHTML = loadingState('加载流程实例…')
+
+    const params = new URLSearchParams({
+        status: state.instanceStatus,
+        page: String(state.instancePage),
+        size: String(state.instanceSize),
+        keyword: state.instanceKeyword,
+        procDefKey: state.instanceDefKey
+    })
+
+    const data = await api.get(`/api/instances?${params.toString()}`)
+    const items = data.items || []
+
+    if (!items.length) {
+        container.innerHTML = emptyState('没有匹配的流程实例', state.instanceKeyword ? '试试清空搜索条件' : '')
+        $('instancesPager').innerHTML = ''
+        return
+    }
+
+    container.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>流程 / 实例ID</th>
+                    <th>业务键</th>
+                    <th>发起人</th>
+                    <th>开始时间</th>
+                    <th>状态</th>
+                    <th class="col-actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${items.map((item) => `
+                    <tr>
+                        <td>
+                            <div class="cell-title">${esc(item.procDefName || item.procDefKey || '未命名流程')}</div>
+                            <div class="cell-sub"><code>${esc(item.id)}</code></div>
+                        </td>
+                        <td>${item.businessKey ? `<span class="mono">${esc(item.businessKey)}</span>` : '<span class="muted">—</span>'}</td>
+                        <td>${esc(item.startUserLabel || item.startUserId || '—')}</td>
+                        <td class="nowrap">${esc(fmtTime(item.startTime))}</td>
+                        <td>
+                            ${instanceBadge(item)}
+                            ${item.currentTaskNames ? `<div class="cell-sub">${esc(item.currentTaskNames)}</div>` : ''}
+                        </td>
+                        <td class="col-actions">
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="open-instance" data-id="${esc(item.id)}">详情</button>
+                            ${item.isFinished
+                                ? `<button type="button" class="btn btn-danger-ghost btn-xs" data-action="instance-purge" data-id="${esc(item.id)}">删除</button>`
+                                : `<button type="button" class="btn btn-ghost btn-xs" data-action="instance-quick-toggle" data-id="${esc(item.id)}" data-suspended="${Number(item.suspensionState) === 2 ? '1' : '0'}">${Number(item.suspensionState) === 2 ? '激活' : '挂起'}</button>
+                                   <button type="button" class="btn btn-danger-ghost btn-xs" data-action="instance-terminate" data-id="${esc(item.id)}">终止</button>`}
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `
+    renderPager($('instancesPager'), data.total || 0, data.page || 1, data.size || state.instanceSize, 'instance-page')
+}
+
+function renderPager(container, total, page, size, action) {
+    const totalPages = Math.max(1, Math.ceil(total / size))
+    const pages = []
+    for (let index = 1; index <= totalPages; index += 1) {
+        if (index === 1 || index === totalPages || Math.abs(index - page) <= 2) pages.push(index)
+        else if (pages[pages.length - 1] !== '…') pages.push('…')
+    }
+
+    container.innerHTML = `
+        <span class="pager-info">共 ${fmtNumber(total)} 条 · 第 ${page}/${totalPages} 页</span>
+        <div class="pager-buttons">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="${action}" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+            ${pages.map((item) => item === '…'
+                ? '<span class="pager-gap">…</span>'
+                : `<button type="button" class="btn btn-sm ${item === page ? 'btn-primary' : 'btn-ghost'}" data-action="${action}" data-page="${item}">${item}</button>`).join('')}
+            <button type="button" class="btn btn-ghost btn-sm" data-action="${action}" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>下一页</button>
         </div>
+    `
+}
 
-        <div class="detail-section">
-            <h4>当前任务</h4>
-            ${(instance.currentTasks || []).length > 0 ? `
-                <table class="data-table">
-                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>创建时间</th><th>操作</th></tr></thead>
-                    <tbody>
-                        ${instance.currentTasks.map(t => {
-                            let assigneeDisplay = '-'
-                            if (t.assignee) {
-                                assigneeDisplay = t.assigneeRealname || t.assigneeName || t.assignee
-                            } else if (t.candidates && t.candidates.length > 0) {
-                                assigneeDisplay = t.candidates.map(c => c.realname || c.username || c.userId).join(', ')
-                            }
-                            return `
-                            <tr>
-                                <td><code>${t.id}</code></td>
-                                <td>${t.name}</td>
-                                <td>${assigneeDisplay}</td>
-                                <td>${new Date(t.createTime).toLocaleString()}</td>
-                                <td>
-                                    <button class="btn btn-small btn-primary" onclick="openAssigneeModal('${t.id}', '${t.name}', '${t.assignee || ''}')">设置审批人</button>
-                                </td>
-                            </tr>
-                        `}).join('')}
-                    </tbody>
-                </table>
-            ` : '<p class="text-center">暂无当前任务</p>'}
-        </div>
+/* ============================ 流程实例详情抽屉 ============================ */
 
-        <div class="detail-section">
-            <h4>流程变量</h4>
-            <table class="variable-table">
-                <thead>
-                    <tr><th>变量名</th><th>类型</th><th>值</th><th>操作</th></tr>
-                </thead>
-                <tbody id="variableTableBody">
-                    ${variables.map(v => {
-                        const isByteArray = v.value === '[byteArray]' || (v.type && (v.type.toLowerCase().includes('byte') || v.type.toLowerCase() === 'serializable'))
-                        return `
-                        <tr data-name="${v.name}" ${isByteArray ? 'class="variable-disabled"' : ''}>
-                            <td><input type="text" value="${v.name}" readonly></td>
+async function openInstance(id) {
+    state.detailId = id
+    state.detail = null
+    state.detailTab = 'overview'
+    state.detailData = { variables: [], history: [], activities: [], xml: null }
+    $('drawerRoot').hidden = false
+    document.body.classList.add('drawer-open')
+    renderDrawer()
+    try {
+        await reloadDetail()
+    } catch (error) {
+        handleError(error)
+        closeDrawer()
+    }
+}
+
+async function reloadDetail() {
+    if (!state.detailId) return
+    const id = enc(state.detailId)
+    const [detail, variables, history, activities] = await Promise.all([
+        api.get(`/api/instances/${id}`),
+        api.get(`/api/instances/${id}/variables`).catch(() => []),
+        api.get(`/api/instances/${id}/history-tasks`).catch(() => []),
+        api.get(`/api/instances/${id}/activities`).catch(() => [])
+    ])
+    state.detail = detail
+    state.detailData.variables = variables || []
+    state.detailData.history = history || []
+    state.detailData.activities = activities || []
+    renderDrawer()
+}
+
+function closeDrawer() {
+    state.detail = null
+    state.detailId = null
+    $('drawerRoot').hidden = true
+    $('drawerRoot').innerHTML = ''
+    document.body.classList.remove('drawer-open')
+}
+
+function renderDrawer() {
+    const root = $('drawerRoot')
+    if (root.hidden) return
+    const detail = state.detail
+
+    if (!detail) {
+        root.innerHTML = `<div class="drawer-backdrop" data-action="close-drawer"></div>
+            <aside class="drawer"><div class="drawer-loading"><span class="spinner"></span>加载实例详情…</div></aside>`
+        return
+    }
+
+    const data = state.detailData
+    const tabs = [
+        { key: 'overview', label: '概览' },
+        { key: 'tasks', label: `当前任务 ${detail.currentTasks.length}` },
+        { key: 'variables', label: `变量 ${data.variables.length}` },
+        { key: 'activities', label: '流转轨迹' },
+        { key: 'history', label: `历史任务 ${data.history.length}` },
+        { key: 'xml', label: '流程图' }
+    ]
+
+    const suspended = Number(detail.suspensionState) === 2
+
+    root.innerHTML = `
+        <div class="drawer-backdrop" data-action="close-drawer"></div>
+        <aside class="drawer" role="dialog" aria-modal="true">
+            <header class="drawer-head">
+                <div class="drawer-head-main">
+                    <div class="drawer-eyebrow">
+                        ${instanceBadge(detail)}
+                        <code>${esc(detail.id)}</code>
+                    </div>
+                    <h2>${esc(detail.procDefName || detail.procDefKey || '流程实例')}</h2>
+                    <p class="drawer-sub">
+                        ${detail.procDefKey ? esc(detail.procDefKey) : '—'}
+                        ${detail.procDefVersion ? ` · v${esc(detail.procDefVersion)}` : ''}
+                        · 发起人 ${esc(detail.startUserLabel || detail.startUserId || '—')}
+                        ${detail.businessKey ? ` · 业务键 ${esc(detail.businessKey)}` : ''}
+                    </p>
+                </div>
+                <button type="button" class="icon-btn" data-action="close-drawer" aria-label="关闭">×</button>
+            </header>
+
+            <div class="drawer-actions">
+                <button type="button" class="btn btn-secondary btn-sm" data-action="instance-toggle" ${detail.isFinished ? 'disabled' : ''}>
+                    ${suspended ? '激活实例' : '挂起实例'}
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" data-action="instance-jump-node">跳转 / 重激活节点</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-action="instance-migrate" ${detail.isFinished ? 'disabled' : ''}>变更流程版本</button>
+                <button type="button" class="btn btn-danger-ghost btn-sm" data-action="instance-terminate">终止流程</button>
+                <button type="button" class="btn btn-danger-ghost btn-sm" data-action="instance-purge">彻底删除</button>
+                <span class="spacer"></span>
+                <button type="button" class="btn btn-ghost btn-sm" data-action="instance-refresh">刷新</button>
+            </div>
+
+            <nav class="drawer-tabs">
+                ${tabs.map((tab) => `
+                    <button type="button" class="drawer-tab ${state.detailTab === tab.key ? 'is-active' : ''}" data-action="drawer-tab" data-tab="${tab.key}">
+                        ${tab.label}
+                    </button>`).join('')}
+            </nav>
+
+            <div class="drawer-body">${renderDrawerTab()}</div>
+        </aside>
+    `
+}
+
+function renderDrawerTab() {
+    const detail = state.detail
+    const data = state.detailData
+    const finished = detail.isFinished
+
+    if (state.detailTab === 'tasks') {
+        if (!detail.currentTasks.length) {
+            return emptyState(finished ? '流程已结束，没有当前任务' : '没有当前任务', '可以使用「跳转 / 重激活节点」重新创建任务')
+        }
+        return `
+            <table class="table">
+                <thead><tr><th>任务</th><th>处理人 / 候选人</th><th>创建时间</th><th class="col-actions">操作</th></tr></thead>
+                <tbody>
+                    ${detail.currentTasks.map((task) => `
+                        <tr>
                             <td>
-                                <select onchange="updateVariableType('${v.name}', this.value)" ${isByteArray ? 'disabled' : ''}>
-                                    <option value="string" ${v.type === 'string' ? 'selected' : ''}>String</option>
-                                    <option value="long" ${v.type === 'long' ? 'selected' : ''}>Long</option>
-                                    <option value="double" ${v.type === 'double' ? 'selected' : ''}>Double</option>
-                                    <option value="boolean" ${v.type === 'boolean' ? 'selected' : ''}>Boolean</option>
-                                </select>
+                                <div class="cell-title">${esc(task.name || task.taskDefKey || '任务')}</div>
+                                <div class="cell-sub"><code>${esc(task.id)}</code>${Number(task.suspensionState) === 2 ? ' <span class="badge badge-warn">已挂起</span>' : ''}</div>
                             </td>
                             <td>
-                                <textarea id="var-${v.name}" rows="1" style="resize: vertical; min-height: 36px;" ${isByteArray ? 'readonly' : ''}>${formatVariableValue(v.value)}</textarea>
+                                ${task.assignee ? esc(task.assigneeLabel || task.assignee) : '<span class="badge badge-muted">未分配</span>'}
+                                ${task.candidates && task.candidates.length
+                                    ? `<div class="cell-sub">候选：${task.candidates.map((candidate) => esc(candidate.label || candidate.userId || candidate.groupId)).join('、')}</div>`
+                                    : ''}
                             </td>
-                            <td>
-                                <button class="btn btn-small btn-primary" onclick="saveVariable('${v.name}')" ${isByteArray ? 'disabled' : ''}>保存</button>
-                                <button class="btn btn-small btn-danger" onclick="deleteVariable('${v.name}')">删除</button>
+                            <td class="nowrap">${esc(fmtTime(task.createTime))}</td>
+                            <td class="col-actions">
+                                <button type="button" class="btn btn-ghost btn-xs" data-action="open-task"
+                                    data-id="${esc(task.id)}" data-name="${esc(task.name || '')}" data-assignee="${esc(task.assignee || '')}">处理人</button>
+                                <button type="button" class="btn btn-ghost btn-xs" data-action="task-toggle"
+                                    data-id="${esc(task.id)}" data-suspended="${Number(task.suspensionState) === 2 ? '1' : '0'}">
+                                    ${Number(task.suspensionState) === 2 ? '激活' : '挂起'}
+                                </button>
                             </td>
                         </tr>
-                    `}).join('')}
+                    `).join('')}
                 </tbody>
-            </table>
-            <div class="add-variable">
-                <input type="text" id="newVarName" placeholder="变量名">
-                <select id="newVarType">
-                    <option value="string">String</option>
-                    <option value="long">Long</option>
-                    <option value="double">Double</option>
-                    <option value="boolean">Boolean</option>
-                </select>
-                <input type="text" id="newVarValue" placeholder="变量值">
-                <button class="btn btn-primary" onclick="addVariable()">添加</button>
-            </div>
-        </div>
+            </table>`
+    }
 
-        <div class="detail-section">
-            <h4>历史任务</h4>
-            ${historyTasks.length > 0 ? `
-                <table class="data-table">
-                    <thead><tr><th>任务ID</th><th>任务名称</th><th>处理人</th><th>开始时间</th><th>结束时间</th><th>操作</th></tr></thead>
+    if (state.detailTab === 'variables') {
+        return `
+            <div class="section-head">
+                <h4>流程变量</h4>
+                <div class="section-actions">
+                    ${finished ? '' : '<button type="button" class="btn btn-primary btn-sm" data-action="variable-add">新增变量</button>'}
+                    ${finished ? '<span class="muted">已结束实例的变量仅可查看 / 删除</span>' : ''}
+                </div>
+            </div>
+            ${data.variables.length ? `
+                <table class="table">
+                    <thead><tr><th>变量名</th><th>类型</th><th>值</th><th class="col-actions">操作</th></tr></thead>
                     <tbody>
-                        ${historyTasks.map(t => `
+                        ${data.variables.map((variable) => `
                             <tr>
-                                <td><code>${t.id}</code></td>
-                                <td>${t.name}</td>
-                                <td>${t.assigneeRealname || t.assigneeName || t.assignee || '-'}</td>
-                                <td>${t.startTime ? new Date(t.startTime).toLocaleString() : '-'}</td>
-                                <td>${t.endTime ? new Date(t.endTime).toLocaleString() : '-'}</td>
-                                <td>
-                                    <button class="btn btn-small btn-primary" onclick="openEditHistoryTaskModal('${t.id}', '${t.name}', '${t.assignee || ''}', '${t.endTime || ''}')">编辑</button>
-                                    <button class="btn btn-small btn-danger" onclick="returnToTask('${t.id}', '${t.name || t.id}', ${isFinished})">退回此处</button>
+                                <td><code>${esc(variable.name)}</code></td>
+                                <td><span class="badge badge-slate">${esc(variable.type)}</span></td>
+                                <td class="var-value">${esc(variable.display !== null && variable.display !== undefined ? variable.display : formatVariableValue(variable))}</td>
+                                <td class="col-actions">
+                                    ${variable.editable && !finished
+                                        ? `<button type="button" class="btn btn-ghost btn-xs" data-action="variable-edit" data-name="${esc(variable.name)}">修改</button>`
+                                        : ''}
+                                    <button type="button" class="btn btn-danger-ghost btn-xs" data-action="variable-delete" data-name="${esc(variable.name)}">删除</button>
                                 </td>
                             </tr>
                         `).join('')}
                     </tbody>
                 </table>
-            ` : '<p class="text-center">暂无历史任务</p>'}
+            ` : emptyState('暂无流程变量')}
+        `
+    }
+
+    if (state.detailTab === 'activities') {
+        if (!data.activities.length) return emptyState('暂无流转记录', '当前数据库可能未开启完整历史级别')
+        return `
+            <ol class="timeline">
+                ${data.activities.map((activity) => `
+                    <li class="timeline-item">
+                        <span class="timeline-dot ${activity.endTime ? '' : 'is-active'}"></span>
+                        <div class="timeline-main">
+                            <div class="timeline-title">
+                                ${esc(activity.activityName || activity.activityId)}
+                                <span class="badge badge-slate">${esc(nodeTypeLabel(activity.activityType))}</span>
+                            </div>
+                            <div class="timeline-meta">
+                                ${esc(fmtTime(activity.startTime))} → ${activity.endTime ? esc(fmtTime(activity.endTime)) : '进行中'}
+                                · ${esc(fmtDuration(activity.startTime, activity.endTime))}
+                                ${activity.assigneeLabel ? ` · ${esc(activity.assigneeLabel)}` : ''}
+                                ${activity.deleteReason ? ` · ${esc(activity.deleteReason)}` : ''}
+                            </div>
+                        </div>
+                    </li>
+                `).join('')}
+            </ol>
+        `
+    }
+
+    if (state.detailTab === 'history') {
+        if (!data.history.length) return emptyState('暂无历史任务')
+        return `
+            <table class="table">
+                <thead><tr><th>任务</th><th>处理人</th><th>开始</th><th>结束</th><th class="col-actions">操作</th></tr></thead>
+                <tbody>
+                    ${data.history.map((task) => `
+                        <tr>
+                            <td>
+                                <div class="cell-title">${esc(task.name || '任务')}</div>
+                                <div class="cell-sub"><code>${esc(task.id)}</code>${task.deleteReason ? ` · ${esc(task.deleteReason)}` : ''}</div>
+                            </td>
+                            <td>${task.assignee ? esc(task.assigneeLabel || task.assignee) : '<span class="muted">—</span>'}</td>
+                            <td class="nowrap">${esc(fmtTime(task.startTime))}</td>
+                            <td class="nowrap">${task.endTime ? esc(fmtTime(task.endTime)) : '<span class="badge badge-success">进行中</span>'}</td>
+                            <td class="col-actions">
+                                <button type="button" class="btn btn-ghost btn-xs" data-action="history-edit" data-id="${esc(task.id)}">编辑</button>
+                                <button type="button" class="btn btn-ghost btn-xs" data-action="history-jump"
+                                    data-id="${esc(task.id)}" data-name="${esc(task.name || task.id)}">${task.endTime ? '退回此处' : '当前节点'}</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `
+    }
+
+    if (state.detailTab === 'xml') {
+        if (state.detailData.xml === null) return loadingState('加载流程图…')
+        if (!state.detailData.xml) return emptyState('未找到 BPMN 文件', '该流程定义可能没有部署 XML 资源')
+        return `
+            <div class="section-head">
+                <h4>BPMN 2.0 XML</h4>
+                <div class="section-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" data-action="xml-copy">复制</button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-action="xml-edit" data-id="${esc(detail.procDefId)}">编辑流程图</button>
+                </div>
+            </div>
+            <pre class="code-block">${esc(state.detailData.xml)}</pre>
+        `
+    }
+
+    const rows = [
+        ['实例ID', `<code>${esc(detail.id)}</code>`],
+        ['流程定义', `${esc(detail.procDefName || '—')}${detail.procDefKey ? `（${esc(detail.procDefKey)} v${esc(detail.procDefVersion || '')}）` : ''}`],
+        ['业务键', detail.businessKey ? esc(detail.businessKey) : '—'],
+        ['发起人', esc(detail.startUserLabel || detail.startUserId || '—')],
+        ['开始时间', esc(fmtTime(detail.startTime))],
+        ['结束时间', detail.endTime ? esc(fmtTime(detail.endTime)) : '<span class="muted">未结束</span>'],
+        ['运行时长', esc(fmtDuration(detail.startTime, detail.endTime))],
+        ['状态', instanceBadge(detail)],
+        ['当前节点', esc((detail.currentTasks || []).map((task) => task.name).filter(Boolean).join('、') || '—')],
+        ['变量数量', `${detail.variableCount} 个`],
+        ['历史任务', `${detail.historyTaskCount} 条`]
+    ]
+    if (detail.deleteReason) rows.push(['删除原因', esc(detail.deleteReason)])
+
+    return `
+        <div class="info-grid">
+            ${rows.map(([label, value]) => `
+                <div class="info-item">
+                    <span>${esc(label)}</span>
+                    <div>${value}</div>
+                </div>`).join('')}
+        </div>
+        ${detail.isFinished ? '<div class="notice notice-info">该实例已结束。可使用「跳转 / 重激活节点」将流程重新激活到指定节点。</div>' : ''}
+    `
+}
+
+function formatVariableValue(variable) {
+    if (variable.value === null || variable.value === undefined) return ''
+    if (typeof variable.value === 'object') return JSON.stringify(variable.value)
+    return String(variable.value)
+}
+
+async function ensureDrawerXml() {
+    if (!state.detail || state.detailData.xml !== null) return
+    if (!state.detail.procDefId) {
+        state.detailData.xml = ''
+        return
+    }
+    const data = await api.get(`/api/definitions/${enc(state.detail.procDefId)}/xml`)
+    state.detailData.xml = data.xml || ''
+}
+
+/* ============================ 待办任务 ============================ */
+
+async function loadTasks() {
+    const container = $('tasksTable')
+    container.innerHTML = loadingState('加载待办任务…')
+
+    const params = new URLSearchParams({
+        page: String(state.taskPage),
+        size: String(state.taskSize),
+        keyword: state.taskKeyword,
+        assignee: state.taskAssignee,
+        procDefKey: state.taskDefKey
+    })
+    const data = await api.get(`/api/tasks?${params.toString()}`)
+    const items = data.items || []
+
+    if (!items.length) {
+        container.innerHTML = emptyState('没有匹配的待办任务', state.taskKeyword ? '试试清空搜索条件' : '')
+        $('tasksPager').innerHTML = ''
+        return
+    }
+
+    container.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>任务 / 任务ID</th>
+                    <th>所属流程</th>
+                    <th>处理人</th>
+                    <th>创建时间</th>
+                    <th>到期时间</th>
+                    <th class="col-actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${items.map((task) => `
+                    <tr>
+                        <td>
+                            <div class="cell-title">${esc(task.name || task.taskDefKey || '任务')}</div>
+                            <div class="cell-sub"><code>${esc(task.id)}</code>${Number(task.suspensionState) === 2 ? ' <span class="badge badge-warn">已挂起</span>' : ''}</div>
+                        </td>
+                        <td>
+                            ${esc(task.procDefName || task.procDefKey || '—')}
+                            <div class="cell-sub">${esc(task.businessKey || task.procInstId)}</div>
+                        </td>
+                        <td>
+                            ${task.assignee ? esc(task.assigneeLabel || task.assignee) : '<span class="badge badge-muted">未分配</span>'}
+                            ${task.candidates && task.candidates.length
+                                ? `<div class="cell-sub">候选：${task.candidates.slice(0, 3).map((candidate) => esc(candidate.label || candidate.userId || candidate.groupId)).join('、')}${task.candidates.length > 3 ? '…' : ''}</div>`
+                                : ''}
+                        </td>
+                        <td class="nowrap">${esc(fmtTime(task.createTime))}</td>
+                        <td class="nowrap">${task.dueDate ? esc(fmtTime(task.dueDate)) : '<span class="muted">—</span>'}</td>
+                        <td class="col-actions">
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="open-task"
+                                data-id="${esc(task.id)}" data-name="${esc(task.name || '')}" data-assignee="${esc(task.assignee || '')}">处理人</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="open-instance" data-id="${esc(task.procInstId)}">实例</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="task-toggle"
+                                data-id="${esc(task.id)}" data-suspended="${Number(task.suspensionState) === 2 ? '1' : '0'}">
+                                ${Number(task.suspensionState) === 2 ? '激活' : '挂起'}
+                            </button>
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `
+    renderPager($('tasksPager'), data.total || 0, data.page || 1, data.size || state.taskSize, 'task-page')
+}
+
+/* ============================ 流程定义 ============================ */
+
+async function ensureDefinitions() {
+    try {
+        state.definitions = await api.get('/api/definitions')
+    } catch (error) {
+        state.definitions = []
+    }
+    buildDefinitionFilters()
+    return state.definitions
+}
+
+function buildDefinitionFilters() {
+    const keys = new Map()
+    state.definitions.forEach((definition) => {
+        if (!keys.has(definition.key)) {
+            keys.set(definition.key, definition.name || definition.key)
+        }
+    })
+    const options = Array.from(keys.entries())
+        .map(([key, name]) => `<option value="${esc(key)}">${esc(name)}</option>`)
+        .join('')
+
+    const instanceFilter = $('instanceDefFilter')
+    instanceFilter.innerHTML = `<option value="">全部流程</option>${options}`
+    instanceFilter.value = state.instanceDefKey
+
+    const taskFilter = $('taskDefFilter')
+    taskFilter.innerHTML = `<option value="">全部流程</option>${options}`
+    taskFilter.value = state.taskDefKey
+}
+
+async function loadDefinitionsView() {
+    const container = $('definitionsTable')
+    container.innerHTML = loadingState('加载流程定义…')
+    state.definitions = await api.get(`/api/definitions?keyword=${enc(state.definitionKeyword)}`)
+    buildDefinitionFilters()
+
+    $('definitionCount').textContent = `共 ${state.definitions.length} 个流程定义`
+
+    if (!state.definitions.length) {
+        container.innerHTML = emptyState('没有匹配的流程定义', '检查关键字，或确认数据库中存在 act_re_procdef 数据')
+        return
+    }
+
+    container.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>流程名称</th>
+                    <th>Key</th>
+                    <th>版本</th>
+                    <th>部署时间</th>
+                    <th>运行中实例</th>
+                    <th>状态</th>
+                    <th class="col-actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${state.definitions.map((definition) => `
+                    <tr>
+                        <td>
+                            <div class="cell-title">${esc(definition.name || definition.key)}</div>
+                            <div class="cell-sub">${esc(definition.category || '未分类')}</div>
+                        </td>
+                        <td><code>${esc(definition.key)}</code></td>
+                        <td><span class="badge badge-slate">v${esc(definition.version)}</span></td>
+                        <td class="nowrap">${esc(fmtTime(definition.deployTime))}</td>
+                        <td>${fmtNumber(definition.runningCount)}</td>
+                        <td>${definitionBadge(definition)}</td>
+                        <td class="col-actions">
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-view" data-id="${esc(definition.id)}">查看 XML</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="xml-edit" data-id="${esc(definition.id)}">编辑</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="def-nodes" data-id="${esc(definition.id)}">节点</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="def-toggle"
+                                data-id="${esc(definition.id)}" data-suspended="${definition.suspended ? '1' : '0'}">
+                                ${definition.suspended ? '激活' : '挂起'}
+                            </button>
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `
+}
+
+/* ============================ 定时作业 ============================ */
+
+async function loadJobs() {
+    const container = $('jobsTable')
+    container.innerHTML = loadingState('加载定时作业…')
+
+    const params = new URLSearchParams({
+        size: '100',
+        keyword: state.jobKeyword,
+        state: state.jobState
+    })
+    const data = await api.get(`/api/jobs?${params.toString()}`)
+    const items = data.items || []
+
+    if (!items.length) {
+        container.innerHTML = emptyState('没有匹配的作业', state.jobKeyword ? '试试清空搜索条件' : '当前没有待执行的异步作业或定时器')
+        return
+    }
+
+    container.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>类型</th>
+                    <th>作业ID</th>
+                    <th>流程实例</th>
+                    <th>重试</th>
+                    <th>到期时间</th>
+                    <th>异常信息</th>
+                    <th class="col-actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${items.map((job) => `
+                    <tr>
+                        <td><span class="badge ${job.failed ? 'badge-danger' : job.source === 'timer' ? 'badge-blue' : 'badge-slate'}">${esc(job.sourceLabel)}</span></td>
+                        <td>
+                            <div class="cell-sub"><code>${esc(job.id)}</code></div>
+                            <div class="cell-sub">${esc(job.handlerType || job.type || '')}</div>
+                        </td>
+                        <td>
+                            ${job.processInstanceId
+                                ? `<button type="button" class="link-btn mono" data-action="open-instance" data-id="${esc(job.processInstanceId)}">${esc(job.processInstanceId)}</button>`
+                                : '<span class="muted">—</span>'}
+                        </td>
+                        <td>${job.retries === null ? '—' : `<span class="badge ${job.failed ? 'badge-danger' : 'badge-muted'}">${job.retries}</span>`}</td>
+                        <td class="nowrap">${esc(fmtTime(job.dueDate))}</td>
+                        <td class="job-message">${job.exceptionMessage ? `<span title="${esc(job.exceptionMessage)}">${esc(job.exceptionMessage.slice(0, 90))}${job.exceptionMessage.length > 90 ? '…' : ''}</span>` : '<span class="muted">—</span>'}</td>
+                        <td class="col-actions">
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="job-execute" data-id="${esc(job.id)}" data-source="${esc(job.source)}" ${['async', 'timer'].includes(job.source) ? '' : 'disabled'}>立即执行</button>
+                            <button type="button" class="btn btn-ghost btn-xs" data-action="job-retry" data-id="${esc(job.id)}" data-source="${esc(job.source)}">重置重试</button>
+                            <button type="button" class="btn btn-danger-ghost btn-xs" data-action="job-delete" data-id="${esc(job.id)}" data-source="${esc(job.source)}">删除</button>
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `
+}
+
+/* ============================ 操作日志 ============================ */
+
+async function loadAudit() {
+    const container = $('auditTable')
+    container.innerHTML = loadingState('加载操作日志…')
+    const rows = await api.get('/api/audit-logs?limit=300')
+
+    if (!rows.length) {
+        container.innerHTML = emptyState('还没有操作记录', '挂起、终止、跳转、修改变量等操作会记录在这里')
+        return
+    }
+
+    container.innerHTML = `
+        <table class="table">
+            <thead><tr><th>时间</th><th>操作</th><th>对象</th><th>说明</th></tr></thead>
+            <tbody>
+                ${rows.map((row) => `
+                    <tr>
+                        <td class="nowrap">${esc(fmtTime(row.created_at))}</td>
+                        <td><span class="badge badge-slate">${esc(row.action)}</span></td>
+                        <td><code>${esc(row.target || '—')}</code></td>
+                        <td class="muted">${esc(row.detail || '—')}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `
+}
+
+/* ============================ 任务处理人弹层 ============================ */
+
+async function openTaskModal(taskId, taskName, assignee) {
+    state.modalTask = { id: taskId, name: taskName || '任务', assignee: assignee || '' }
+    await refreshTaskModal()
+}
+
+async function refreshTaskModal() {
+    const task = state.modalTask
+    if (!task) return
+    const links = await api.get(`/api/tasks/${enc(task.id)}/identitylinks`)
+
+    const body = `
+        <div class="field">
+            <span>当前处理人</span>
+            <div class="inline-form">
+                <input id="taskAssigneeInput" list="userOptions" value="${esc(task.assignee)}" placeholder="用户ID 或从列表选择">
+                <button type="button" class="btn btn-primary btn-sm" data-action="task-save-assignee">保存</button>
+                <button type="button" class="btn btn-ghost btn-sm" data-action="task-clear-assignee">清空</button>
+            </div>
+            <p class="form-hint">${task.assignee ? esc(userHint(task.assignee)) : '未分配：任何拥有候选人权限的用户都可以认领'}</p>
+        </div>
+        <hr class="divider">
+        <div class="field">
+            <span>添加候选人 / 参与者</span>
+            <div class="inline-form">
+                <input id="candidateInput" list="userOptions" placeholder="用户ID">
+                <select id="candidateType">
+                    <option value="candidate">候选人</option>
+                    <option value="participant">参与者</option>
+                </select>
+                <button type="button" class="btn btn-secondary btn-sm" data-action="candidate-add">添加</button>
+            </div>
+        </div>
+        <div class="link-list">
+            ${links.length ? links.map((link) => `
+                <div class="link-item">
+                    <span>
+                        <strong>${esc(link.label || link.userId || link.groupId)}</strong>
+                        <small>${esc(link.userId || link.groupId)} · ${link.type === 'candidate' ? '候选人' : link.type === 'participant' ? '参与者' : esc(link.type)}</small>
+                    </span>
+                    <button type="button" class="btn btn-danger-ghost btn-xs" data-action="candidate-remove"
+                        data-user="${esc(link.userId || '')}" data-group="${esc(link.groupId || '')}" data-type="${esc(link.type || '')}">删除</button>
+                </div>
+            `).join('') : '<p class="muted">暂无候选人 / 参与者</p>'}
         </div>
     `
 
-    elements.instanceModal.classList.add('show')
+    const html = modalShell(`任务处理人 · ${task.name}`, body, '<button type="button" class="btn btn-secondary" data-action="modal-close">关闭</button>')
+    openModal(html, 'md')
 }
 
-// 关闭实例详情模态框
-function closeInstanceModal() {
-    elements.instanceModal.classList.remove('show')
+/* ============================ 变量弹层 ============================ */
+
+function openVariableModal(mode, variable) {
+    const isEdit = mode === 'edit'
+    const type = variable ? variable.type : 'string'
+    const knownTypes = ['string', 'long', 'double', 'boolean', 'json']
+    const options = knownTypes.includes(type) ? knownTypes : [...knownTypes, type]
+    const value = variable ? formatVariableValue(variable) : ''
+
+    const body = `
+        <div class="form-grid">
+            <label class="field">
+                <span>变量名</span>
+                <input id="varName" value="${esc(variable ? variable.name : '')}" ${isEdit ? 'readonly' : ''} placeholder="例如：approvalStatus">
+            </label>
+            <label class="field">
+                <span>类型</span>
+                <select id="varType">
+                    ${options.map((item) => `<option value="${esc(item)}" ${item === type ? 'selected' : ''}>${esc(item)}</option>`).join('')}
+                </select>
+            </label>
+        </div>
+        <label class="field">
+            <span>变量值</span>
+            <textarea id="varValue" rows="4" placeholder="变量值">${esc(value)}</textarea>
+            <p class="form-hint">boolean 填 true / false；long 为整数；json 需为合法 JSON；string 最长 4000 字符。</p>
+        </label>
+    `
+    openModal(modalShell(isEdit ? '修改变量' : '新增变量', body, `
+        <button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
+        <button type="button" class="btn btn-primary" data-action="variable-save" data-mode="${isEdit ? 'edit' : 'add'}">保存</button>
+    `))
 }
 
-// 添加变量
-async function addVariable() {
-    const name = document.getElementById('newVarName').value.trim()
-    const type = document.getElementById('newVarType').value
-    const value = document.getElementById('newVarValue').value
+/* ============================ 历史任务编辑 ============================ */
 
-    if (!name) {
-        alert('请输入变量名')
-        return
-    }
-
-    await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
-
-    document.getElementById('newVarName').value = ''
-    document.getElementById('newVarValue').value = ''
-
-    showInstanceDetail(state.currentInstanceId)
+function openHistoryTaskModal(task) {
+    const body = `
+        <div class="form-grid">
+            <label class="field">
+                <span>任务名称</span>
+                <input id="historyName" value="${esc(task.name || '')}">
+            </label>
+            <label class="field">
+                <span>审批人</span>
+                <input id="historyAssignee" list="userOptions" value="${esc(task.assignee || '')}" placeholder="用户ID">
+            </label>
+        </div>
+        <div class="form-grid">
+            <label class="field">
+                <span>审批时间</span>
+                <input id="historyEndTime" type="datetime-local" value="${esc(toLocalInput(task.endTime))}">
+            </label>
+            <label class="field">
+                <span>删除原因</span>
+                <input id="historyDeleteReason" value="${esc(task.deleteReason || '')}" placeholder="可留空">
+            </label>
+        </div>
+        <p class="form-hint">清空「审批时间」会将该历史任务标记为未完成，请谨慎操作。</p>
+    `
+    openModal(modalShell('编辑历史审批记录', body, `
+        <button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
+        <button type="button" class="btn btn-primary" data-action="history-save" data-id="${esc(task.id)}">保存修改</button>
+    `))
 }
 
-// 格式化变量值用于显示
-function formatVariableValue(value) {
-    if (value === null || value === undefined) {
-        return ''
-    }
-    if (typeof value === 'object') {
-        return JSON.stringify(value, null, 2)
-    }
-    if (typeof value === 'string') {
-        return value.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&/g, '&amp;')
-    }
-    return String(value)
-}
+/* ============================ 流程图 ============================ */
 
-// 更新变量类型
-function updateVariableType(name, type) {
-    // 这里只是更新本地UI，实际保存时再提交
-}
-
-// 保存变量
-async function saveVariable(name) {
-    const type = document.querySelector(`#variableTableBody tr[data-name="${name}"] select`).value
-    let value = document.getElementById(`var-${name}`).value
-    
-    // 反转义 HTML 实体，确保保存原始值
-    value = value.replace(/&quot;/g, '"').replace(/\\n/g, '\n')
-
-    await api.post(`/api/instances/${state.currentInstanceId}/variables`, { name, type, value })
-    alert('变量保存成功')
-}
-
-// 删除变量
-async function deleteVariable(name) {
-    if (!confirm('确定删除此变量吗？')) return
-    await api.delete(`/api/instances/${state.currentInstanceId}/variables/${name}`)
-    showInstanceDetail(state.currentInstanceId)
-}
-
-// 删除流程实例
-async function deleteInstance(instanceId) {
-    if (!confirm('⚠️ 警告：删除流程实例将删除所有相关数据，包括运行时数据和历史记录！\n\n确定要删除此流程实例吗？')) {
-        return
-    }
-
-    const result = await api.delete(`/api/instances/${instanceId}`)
-
-    if (result.success) {
-        alert('删除成功')
-        loadInstances()
-    } else {
-        alert('删除失败: ' + result.error)
-    }
-}
-
-// 直接退回到任务
-async function returnToTask(taskId, taskName, isFinished) {
-    const actionText = isFinished ? '重新激活并退回到' : '退回到'
-    const confirmMsg = isFinished 
-        ? `⚠️ 已结束流程退回警告：\n\n此操作将重新激活已结束的流程实例！\n\n确定要将流程「${actionText}」任务「${taskName}」吗？`
-        : `确定要将流程${actionText}任务「${taskName}」吗？这将重置流程状态。`
-    
-    if (!confirm(confirmMsg)) return
-
-    const apiUrl = isFinished 
-        ? `/api/instances/${state.currentInstanceId}/jump-to-finished-task`
-        : `/api/instances/${state.currentInstanceId}/jump-to-task`
-
-    const result = await api.post(apiUrl, { taskId: taskId })
-
-    if (result.success) {
-        alert('退回成功')
-        closeInstanceModal()
-        loadInstances()
-    } else {
-        alert('退回失败: ' + result.error)
-    }
-}
-
-// 审批人设置相关
-let currentTaskId = null
-
-async function openAssigneeModal(taskId, taskName, currentAssignee) {
-    currentTaskId = taskId
-    elements.assigneeTaskId.value = taskId
-    elements.assigneeTaskName.value = taskName
-    elements.currentAssignee.value = currentAssignee || '无'
-    elements.newAssignee.value = ''
-    elements.newAssignee.removeAttribute('data-username')
-    elements.newAssignee.removeAttribute('data-realname')
-    elements.candidateUserId.value = ''
-    elements.candidateUserId.removeAttribute('data-username')
-    elements.candidateUserId.removeAttribute('data-realname')
-    
-    // 清空下拉菜单
-    const assigneeDropdown = elements.newAssignee.nextElementSibling
-    if (assigneeDropdown) assigneeDropdown.style.display = 'none'
-    const candidateDropdown = elements.candidateUserId.nextElementSibling
-    if (candidateDropdown) candidateDropdown.style.display = 'none'
-
-    await loadIdentityLinks(taskId)
-    elements.assigneeModal.classList.add('show')
-}
-
-async function loadIdentityLinks(taskId) {
-    const identitylinks = await api.get(`/api/tasks/${taskId}/identitylinks`)
-
-    if (identitylinks && identitylinks.length > 0) {
-        elements.identityLinkList.innerHTML = identitylinks.map(link => {
-            const displayName = link.realname || link.username || link.userId
-            const userInfo = link.username ? `${link.userId} (${displayName})` : link.userId
-            return `
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px; border-bottom: 1px solid #eee;">
-                <span>${userInfo} - ${link.type === 'candidate' ? '候选人' : '审批人'}</span>
-                <button class="btn btn-small btn-danger" onclick="removeIdentityLink('${link.userId}', '${link.type}')">删除</button>
-            </div>
-        `}).join('')
-    } else {
-        elements.identityLinkList.innerHTML = '<p style="color: #999; text-align: center;">暂无候选人/审批人</p>'
-    }
-}
-
-async function saveAssignee() {
-    const newAssignee = elements.newAssignee.value.trim()
-
-    if (!newAssignee) {
-        alert('请选择或输入审批人ID')
-        return
-    }
-
-    const result = await api.post(`/api/tasks/${currentTaskId}/set-assignee`, { assignee: newAssignee })
-
-    if (result.success) {
-        alert('审批人设置成功')
-        elements.currentAssignee.value = newAssignee
-        elements.newAssignee.value = ''
-        elements.newAssignee.removeAttribute('data-username')
-        elements.newAssignee.removeAttribute('data-realname')
-        const dropdown = elements.newAssignee.nextElementSibling
-        if (dropdown) dropdown.style.display = 'none'
-        await loadIdentityLinks(currentTaskId)
-        showInstanceDetail(state.currentInstanceId)
-    } else {
-        alert('设置失败: ' + result.error)
-    }
-}
-
-async function addCandidate() {
-    const userId = elements.candidateUserId.value.trim()
-    const type = elements.candidateType.value
-
-    if (!userId) {
-        alert('请选择或输入用户ID')
-        return
-    }
-
-    const result = await api.post(`/api/tasks/${currentTaskId}/add-identitylink`, { userId, type })
-
-    if (result.success) {
-        alert('添加成功')
-        elements.candidateUserId.value = ''
-        elements.candidateUserId.removeAttribute('data-username')
-        elements.candidateUserId.removeAttribute('data-realname')
-        const dropdown = elements.candidateUserId.nextElementSibling
-        if (dropdown) dropdown.style.display = 'none'
-        await loadIdentityLinks(currentTaskId)
-    } else {
-        alert('添加失败: ' + result.error)
-    }
-}
-
-async function removeIdentityLink(userId, type) {
-    if (!confirm(`确定删除用户 ${userId} 的身份链接吗？`)) return
-
-    const result = await api.delete(`/api/tasks/${currentTaskId}/identitylink?userId=${userId}&type=${type}`)
-
-    if (result.success) {
-        alert('删除成功')
-        await loadIdentityLinks(currentTaskId)
-    } else {
-        alert('删除失败: ' + result.error)
-    }
-}
-
-async function refreshTaskInfo() {
-    if (!currentTaskId) return
-
-    const instance = await api.get(`/api/instances/${state.currentInstanceId}`)
-    const task = instance.currentTasks.find(t => t.id === currentTaskId)
-
-    if (task) {
-        elements.currentAssignee.value = task.assignee || '无'
-    }
-
-    await loadIdentityLinks(currentTaskId)
-}
-
-// 查看流程定义XML
-async function viewDefinitionXml(defId) {
-    const result = await api.get(`/api/definitions/${defId}/xml`)
-    elements.xmlContent.value = result.xml || ''
-    elements.xmlContent.readOnly = true
-    elements.xmlActions.style.display = 'none'
-    state.currentDefinitionId = defId
-    state.originalXml = result.xml
-    document.getElementById('affectedInstancesInfo').style.display = 'none'
-    elements.xmlModal.classList.add('show')
-}
-
-// 编辑流程定义XML
-async function editDefinitionXml(defId) {
-    const result = await api.get(`/api/definitions/${defId}/xml`)
-    elements.xmlContent.value = result.xml || ''
-    elements.xmlContent.readOnly = false
-    elements.xmlActions.style.display = 'block'
-    state.currentDefinitionId = defId
-    state.originalXml = result.xml
-
-    const affectedInfo = document.getElementById('affectedInstancesInfo')
+async function openXmlModal(definitionId, editable) {
+    const data = await api.get(`/api/definitions/${enc(definitionId)}/xml`)
+    const definition = data.definition || {}
+    state.xmlOriginal = data.xml || ''
+    let affected = { total: 0 }
     try {
-        const affected = await api.get(`/api/definitions/${defId}/affected-instances`)
-        if (affected.total > 0) {
-            const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
-            const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
-            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404;"><strong>⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例</strong><br><small>实例时间段：${earliest} ~ ${latest}</small></div>`
-            affectedInfo.style.display = 'block'
-        } else {
-            affectedInfo.innerHTML = `<div style="padding: 12px; background-color: #d1ecf1; border: 1px solid #17a2b8; border-radius: 6px; color: #0c5460;"><strong>ℹ️ 暂无关联的历史实例，可以安全修改</strong></div>`
-            affectedInfo.style.display = 'block'
-        }
+        affected = await api.get(`/api/definitions/${enc(definitionId)}/affected-instances`)
     } catch (error) {
-        affectedInfo.style.display = 'none'
+        affected = { total: 0 }
     }
 
-    elements.xmlModal.classList.add('show')
+    const warning = affected.total > 0
+        ? `<div class="notice notice-warn">
+               <strong>该定义已关联 ${fmtNumber(affected.total)} 个历史实例</strong>
+               <span>修改 XML 只会覆盖部署资源，不会迁移已经运行的实例。</span>
+           </div>`
+        : '<div class="notice notice-info">该流程定义暂无关联的历史实例。</div>'
+
+    const body = `
+        <div class="xml-meta">
+            <span>${esc(definition.name || definition.key || '')}</span>
+            <span class="badge badge-slate">v${esc(definition.version || '?')}</span>
+            <span class="mono">${esc(definition.resourceName || '')}</span>
+        </div>
+        ${warning}
+        <textarea id="xmlEditor" class="code-editor" spellcheck="false" ${editable ? '' : 'readonly'}>${esc(data.xml || '')}</textarea>
+    `
+    const footer = editable
+        ? `<button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
+           <button type="button" class="btn btn-secondary" data-action="xml-reset">重置</button>
+           <button type="button" class="btn btn-primary" data-action="xml-save" data-id="${esc(definitionId)}">保存修改</button>`
+        : `<button type="button" class="btn btn-secondary" data-action="modal-close">关闭</button>
+           <button type="button" class="btn btn-primary" data-action="xml-edit" data-id="${esc(definitionId)}">编辑</button>`
+
+    openModal(modalShell('流程定义 XML', body, footer), 'lg')
 }
 
-// 保存XML
-async function saveXml() {
-    const xml = elements.xmlContent.value
-    if (!xml.trim()) {
-        alert('XML内容不能为空')
+async function openNodePicker() {
+    const detail = state.detail
+    if (!detail || !detail.procDefId) {
+        toast('缺少流程定义信息', 'error')
         return
     }
+    const data = await api.get(`/api/definitions/${enc(detail.procDefId)}/nodes`)
+    const nodes = (data.nodes || []).filter((node) => node.type === 'userTask')
 
-    const affected = await api.get(`/api/definitions/${state.currentDefinitionId}/affected-instances`)
-    let confirmMsg = '确定要保存修改吗？'
+    const body = nodes.length
+        ? `
+            <p class="muted">选择要跳转到的用户任务节点。跳转后当前任务会被删除，并按节点配置重新分配处理人 / 候选人。</p>
+            <div class="node-list">
+                ${nodes.map((node, index) => `
+                    <label class="node-item">
+                        <input type="radio" name="targetNode" value="${esc(node.id)}" ${index === 0 ? 'checked' : ''}>
+                        <span class="node-main">
+                            <strong>${esc(node.name || node.id)}</strong>
+                            <small><code>${esc(node.id)}</code></small>
+                        </span>
+                        <span class="node-side">
+                            ${node.assignee ? `处理人 ${esc(node.assignee)}` : ''}
+                            ${node.candidateGroups ? `候选组 ${esc(node.candidateGroups)}` : ''}
+                            ${node.candidateUsers ? `候选人 ${esc(node.candidateUsers)}` : ''}
+                            ${!node.assignee && !node.candidateGroups && !node.candidateUsers ? '未配置处理人' : ''}
+                        </span>
+                    </label>
+                `).join('')}
+            </div>
+            ${detail.isFinished ? '<div class="notice notice-warn">该实例已结束，跳转后会重新激活流程。</div>' : ''}
+        `
+        : emptyState('该流程定义中没有用户任务节点')
 
-    if (affected.total > 0) {
-        const earliest = affected.earliestStart ? new Date(affected.earliestStart).toLocaleString() : '-'
-        const latest = affected.latestStart ? new Date(affected.latestStart).toLocaleString() : '-'
-        confirmMsg = `⚠️ 警告：此操作可能影响 ${affected.total} 个历史实例\n\n实例时间段：${earliest} ~ ${latest}\n\n确定要继续保存吗？`
-    }
-
-    if (!confirm(confirmMsg)) {
-        return
-    }
-
-    const result = await api.put(`/api/definitions/${state.currentDefinitionId}/xml`, { xml })
-
-    if (result.success) {
-        alert('保存成功')
-        state.originalXml = xml
-    } else {
-        alert('保存失败: ' + result.error)
-    }
+    openModal(modalShell('跳转到节点', body, `
+        <button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
+        <button type="button" class="btn btn-primary" data-action="node-jump" ${nodes.length ? '' : 'disabled'}>执行跳转</button>
+    `), 'md')
 }
 
-// 重置XML
-function resetXml() {
-    elements.xmlContent.value = state.originalXml
-}
-
-// 关闭XML模态框
-function closeXmlModal() {
-    elements.xmlModal.classList.remove('show')
-}
-
-// 用户缓存 - 本次连接一直缓存
-let cachedUsers = []
-
-async function getUsers(keyword = '') {
-    // 优先加载完整用户列表
-    if (cachedUsers.length === 0) {
-        const users = await api.get(`/api/users`)
-        cachedUsers = users
-    }
-    
-    // 缓存中有数据，直接过滤返回
-    if (keyword) {
-        return cachedUsers.filter(u => 
-            (u.username && u.username.toLowerCase().includes(keyword.toLowerCase())) ||
-            (u.realname && u.realname.toLowerCase().includes(keyword.toLowerCase()))
-        )
-    }
-    return cachedUsers
-}
-
-async function searchUsers(input, callback) {
-    const keyword = input.value
-    const users = await getUsers(keyword)
-    
-    const dropdown = input.nextElementSibling
-    if (dropdown && dropdown.classList.contains('user-dropdown')) {
-        if (users.length > 0) {
-            dropdown.innerHTML = users.map(u => `
-                <div class="dropdown-item" onclick="selectUser('${u.id}', '${u.username}', '${u.realname}', '${input.id}')">
-                    ${u.realname || u.username} (${u.username})
+async function openDefinitionNodes(definitionId) {
+    const data = await api.get(`/api/definitions/${enc(definitionId)}/nodes`)
+    const nodes = data.nodes || []
+    const body = nodes.length
+        ? `<ul class="compact-list">${nodes.map((node) => `
+            <li>
+                <div class="compact-row is-static">
+                    <span class="compact-main">
+                        <strong>${esc(node.name || node.id)}</strong>
+                        <span><code>${esc(node.id)}</code>${node.assignee ? ` · 处理人 ${esc(node.assignee)}` : ''}${node.candidateGroups ? ` · 候选组 ${esc(node.candidateGroups)}` : ''}</span>
+                    </span>
+                    <span class="badge badge-slate">${esc(nodeTypeLabel(node.type))}</span>
                 </div>
-            `).join('')
-            dropdown.style.display = 'block'
-        } else {
-            dropdown.innerHTML = '<div class="dropdown-item">没有找到匹配的用户</div>'
-            dropdown.style.display = 'block'
+            </li>`).join('')}</ul>`
+        : emptyState('未解析到节点')
+    openModal(modalShell('流程节点', body, '<button type="button" class="btn btn-secondary" data-action="modal-close">关闭</button>'), 'md')
+}
+
+async function openMigrateModal() {
+    const detail = state.detail
+    if (!detail) return
+    if (!state.definitions.length) await ensureDefinitions()
+    const candidates = state.definitions.filter((definition) =>
+        definition.key === detail.procDefKey && definition.id !== detail.procDefId
+    )
+
+    const body = candidates.length
+        ? `
+            <p class="muted">仅列出同一流程 Key 的其他版本。迁移只修改运行中实例引用的流程定义，已生成的节点状态保持不变，请确认版本兼容。</p>
+            <div class="node-list">
+                ${candidates.map((definition, index) => `
+                    <label class="node-item">
+                        <input type="radio" name="migrateTarget" value="${esc(definition.id)}" ${index === 0 ? 'checked' : ''} ${definition.suspended ? 'disabled' : ''}>
+                        <span class="node-main">
+                            <strong>v${esc(definition.version)} · ${esc(definition.name || definition.key)}</strong>
+                            <small><code>${esc(definition.id)}</code></small>
+                        </span>
+                        <span class="node-side">${definition.suspended ? '已挂起' : esc(fmtTime(definition.deployTime))}</span>
+                    </label>
+                `).join('')}
+            </div>
+        `
+        : emptyState('没有可迁移的其他版本', '同一 Key 下需要先部署新版本')
+
+    openModal(modalShell('变更流程版本', body, `
+        <button type="button" class="btn btn-secondary" data-action="modal-close">取消</button>
+        <button type="button" class="btn btn-primary" data-action="migrate-confirm" ${candidates.length ? '' : 'disabled'}>确认迁移</button>
+    `), 'md')
+}
+
+/* ============================ 动作注册 ============================ */
+
+const actions = {
+    /* ---- 弹层 ---- */
+    'modal-close': () => closeModal(null),
+    'dialog-cancel': () => closeModal(null),
+    'dialog-confirm': () => {
+        const input = $('dialogInput')
+        closeModal(input ? input.value : true)
+    },
+
+    /* ---- 连接页 ---- */
+    'conn-new': () => resetConnectionForm(),
+    'conn-pick': (el) => pickConnection(Number(el.dataset.id)),
+    'conn-delete': (el) => deleteSavedConnection(Number(el.dataset.id)),
+    'conn-load-databases': (el) => loadDatabaseList(false),
+    'conn-test': (el) => testConnection(el),
+    'conn-save': (el) => saveConnection(el),
+    'conn-connect': (el) => connectDatabase(el),
+
+    'switch-database': async () => {
+        const ok = await askDialog({
+            title: '切换数据库',
+            message: '切换会断开当前数据库连接，并返回连接页面。确定继续吗？',
+            confirmText: '断开并切换'
+        })
+        if (ok === null) return
+        await api.post('/api/disconnect')
+        state.connected = false
+        closeDrawer()
+        await checkConnection()
+    },
+    disconnect: async () => {
+        const ok = await askDialog({
+            title: '断开连接',
+            message: '断开后需要重新连接数据库才能继续操作。确定断开吗？',
+            confirmText: '断开'
+        })
+        if (ok === null) return
+        await api.post('/api/disconnect')
+        state.connected = false
+        state.connection = null
+        state.definitions = []
+        state.users = []
+        closeDrawer()
+        showConnectionScreen()
+        toast('已断开数据库连接', 'info')
+    },
+
+    /* ---- 视图 ---- */
+    'refresh-view': () => loadView(state.view),
+
+    /* ---- 实例 ---- */
+    'open-instance': (el) => openInstance(el.dataset.id),
+    'close-drawer': () => closeDrawer(),
+    'instance-refresh': () => reloadDetail(),
+    'instance-page': (el) => {
+        state.instancePage = Number(el.dataset.page) || 1
+        loadInstances().catch(handleError)
+    },
+    'instance-status': (el) => {
+        state.instanceStatus = el.dataset.status
+        state.instancePage = 1
+        document.querySelectorAll('#instanceStatusTabs button').forEach((button) => {
+            button.classList.toggle('is-active', button.dataset.status === state.instanceStatus)
+        })
+        loadInstances().catch(handleError)
+    },
+    'instance-quick-toggle': async (el) => {
+        const suspended = el.dataset.suspended === '1'
+        await withBusy(el, () => api.post(`/api/instances/${enc(el.dataset.id)}/${suspended ? 'activate' : 'suspend'}`))
+        toast(suspended ? '实例已激活' : '实例已挂起', 'success')
+        await loadInstances()
+        if (state.view === 'overview') await loadOverview()
+    },
+    'instance-terminate': async (el) => {
+        const id = el.dataset.id || state.detailId
+        const reason = await askDialog({
+            title: '终止流程实例',
+            message: `终止会删除该实例的运行时数据（任务、变量、作业），并保留历史记录。<br>实例ID：<code>${esc(id)}</code>`,
+            label: '终止原因',
+            value: '运维工具终止流程',
+            confirmText: '确认终止',
+            danger: true
+        })
+        if (reason === null) return
+        const data = await api.post(`/api/instances/${enc(id)}/terminate`, { reason })
+        toast('流程实例已终止', 'success')
+        if (state.detailId === id) await reloadDetail()
+        if (state.view === 'instances') await loadInstances()
+        if (state.view === 'overview') await loadOverview()
+        if (data && data.warnings && data.warnings.length) {
+            data.warnings.forEach((warning) => toast(warning, 'info'))
+        }
+    },
+    'instance-purge': async (el) => {
+        const id = el.dataset.id || state.detailId
+        const ok = await askDialog({
+            title: '彻底删除流程实例',
+            message: `将永久删除实例 <code>${esc(id)}</code> 的<strong>运行时数据与全部历史记录</strong>（任务、变量、轨迹、评论）。<br>此操作不可撤销，通常只用于清理测试数据。`,
+            confirmText: '确认彻底删除',
+            danger: true
+        })
+        if (ok === null) return
+        await api.delete(`/api/instances/${enc(id)}`)
+        toast('实例及历史数据已删除', 'success')
+        closeDrawer()
+        if (state.view === 'instances') await loadInstances()
+        if (state.view === 'overview') await loadOverview()
+    },
+    'instance-toggle': async (el) => {
+        const detail = state.detail
+        if (!detail) return
+        const suspended = Number(detail.suspensionState) === 2
+        await withBusy(el, () => api.post(`/api/instances/${enc(detail.id)}/${suspended ? 'activate' : 'suspend'}`))
+        toast(suspended ? '实例已激活' : '实例已挂起', 'success')
+        await reloadDetail()
+        if (state.view === 'instances') await loadInstances()
+    },
+    'instance-migrate': () => openMigrateModal().catch(handleError),
+    'migrate-confirm': async (el) => {
+        const selected = document.querySelector('input[name="migrateTarget"]:checked')
+        if (!selected) {
+            toast('请选择目标版本', 'error')
+            return
+        }
+        await withBusy(el, () => api.post(`/api/instances/${enc(state.detail.id)}/migrate`, { definitionId: selected.value }))
+        closeModal()
+        toast('流程版本已变更', 'success')
+        await reloadDetail()
+        if (state.view === 'instances') await loadInstances()
+    },
+    'instance-jump-node': () => openNodePicker().catch(handleError),
+    'node-jump': async (el) => {
+        const selected = document.querySelector('input[name="targetNode"]:checked')
+        if (!selected) {
+            toast('请选择目标节点', 'error')
+            return
+        }
+        const data = await withBusy(el, () => api.post(`/api/instances/${enc(state.detail.id)}/jump-to-activity`, { activityId: selected.value }))
+        closeModal()
+        toast('已跳转到目标节点', 'success')
+        await reloadDetail()
+        if (state.view === 'instances') await loadInstances()
+        if (data && data.warnings) data.warnings.forEach((warning) => toast(warning, 'info'))
+    },
+
+    /* ---- 抽屉标签 ---- */
+    'drawer-tab': async (el) => {
+        state.detailTab = el.dataset.tab
+        if (state.detailTab === 'xml') {
+            try {
+                await ensureDrawerXml()
+            } catch (error) {
+                toast(error.message, 'error')
+                state.detailData.xml = ''
+            }
+        }
+        renderDrawer()
+    },
+
+    /* ---- 变量 ---- */
+    'variable-add': () => openVariableModal('add', null),
+    'variable-edit': (el) => {
+        const variable = state.detailData.variables.find((item) => item.name === el.dataset.name)
+        if (variable) openVariableModal('edit', variable)
+    },
+    'variable-save': async (el) => {
+        const name = $('varName').value.trim()
+        const type = $('varType').value
+        const value = $('varValue').value
+        if (!name) {
+            toast('请填写变量名', 'error')
+            return
+        }
+        await withBusy(el, () => api.post(`/api/instances/${enc(state.detail.id)}/variables`, { name, type, value }))
+        closeModal()
+        toast('变量已保存', 'success')
+        await reloadDetail()
+    },
+    'variable-delete': async (el) => {
+        const ok = await askDialog({
+            title: '删除变量',
+            message: `确定删除变量 <code>${esc(el.dataset.name)}</code> 吗？运行时与历史变量都会删除。`,
+            confirmText: '删除',
+            danger: true
+        })
+        if (ok === null) return
+        await api.delete(`/api/instances/${enc(state.detail.id)}/variables/${enc(el.dataset.name)}`)
+        toast('变量已删除', 'success')
+        await reloadDetail()
+    },
+
+    /* ---- 历史任务 ---- */
+    'history-edit': (el) => {
+        const task = state.detailData.history.find((item) => item.id === el.dataset.id)
+        if (task) openHistoryTaskModal(task)
+    },
+    'history-save': async (el) => {
+        const endTime = $('historyEndTime').value
+        await withBusy(el, () => api.put(`/api/history-tasks/${enc(el.dataset.id)}`, {
+            name: $('historyName').value,
+            assignee: $('historyAssignee').value.trim(),
+            endTime: endTime ? new Date(endTime).toISOString() : null,
+            deleteReason: $('historyDeleteReason').value
+        }))
+        closeModal()
+        toast('历史任务已更新', 'success')
+        await reloadDetail()
+    },
+    'history-jump': async (el) => {
+        const finished = state.detail.isFinished
+        const ok = await askDialog({
+            title: finished ? '重新激活并退回' : '退回到历史节点',
+            message: `将流程退回任务 <strong>${esc(el.dataset.name)}</strong>：<br>
+                · 当前所有任务、候选人会被删除<br>
+                · 该节点之后的历史审批记录会被清理<br>
+                · 流程变量会从历史记录恢复<br>
+                ${finished ? '· 实例将重新激活为运行中' : ''}`,
+            confirmText: '确认退回',
+            danger: true
+        })
+        if (ok === null) return
+        const data = await api.post(`/api/instances/${enc(state.detail.id)}/jump-to-task`, { taskId: el.dataset.id })
+        toast('已退回到目标节点', 'success')
+        await reloadDetail()
+        if (state.view === 'instances') await loadInstances()
+        if (state.view === 'overview') await loadOverview()
+        if (data && data.warnings) data.warnings.forEach((warning) => toast(warning, 'info'))
+    },
+
+    /* ---- 任务 ---- */
+    'open-task': (el) => openTaskModal(el.dataset.id, el.dataset.name, el.dataset.assignee).catch(handleError),
+    'task-save-assignee': async (el) => {
+        const assignee = $('taskAssigneeInput').value.trim()
+        if (!assignee) {
+            toast('请填写或选择用户', 'error')
+            return
+        }
+        await withBusy(el, () => api.post(`/api/tasks/${enc(state.modalTask.id)}/set-assignee`, { assignee }))
+        state.modalTask.assignee = assignee
+        toast('处理人已更新', 'success')
+        await refreshTaskModal()
+        await reloadDetail()
+        if (state.view === 'tasks') await loadTasks()
+    },
+    'task-clear-assignee': async (el) => {
+        const ok = await askDialog({
+            title: '清空处理人',
+            message: '清空后任务回到待认领状态，候选人仍然保留。确定继续吗？',
+            confirmText: '清空',
+            danger: true
+        })
+        if (ok === null) return
+        await withBusy(el, () => api.post(`/api/tasks/${enc(state.modalTask.id)}/set-assignee`, { assignee: '' }))
+        state.modalTask.assignee = ''
+        toast('处理人已清空', 'success')
+        await refreshTaskModal()
+        await reloadDetail()
+        if (state.view === 'tasks') await loadTasks()
+    },
+    'candidate-add': async (el) => {
+        const userId = $('candidateInput').value.trim()
+        const type = $('candidateType').value
+        if (!userId) {
+            toast('请填写或选择用户', 'error')
+            return
+        }
+        await withBusy(el, () => api.post(`/api/tasks/${enc(state.modalTask.id)}/identitylinks`, { userId, type }))
+        toast('候选人已添加', 'success')
+        await refreshTaskModal()
+        await reloadDetail()
+        if (state.view === 'tasks') await loadTasks()
+    },
+    'candidate-remove': async (el) => {
+        const params = new URLSearchParams()
+        if (el.dataset.user) params.set('userId', el.dataset.user)
+        if (el.dataset.group) params.set('groupId', el.dataset.group)
+        if (el.dataset.type) params.set('type', el.dataset.type)
+        await api.delete(`/api/tasks/${enc(state.modalTask.id)}/identitylinks?${params.toString()}`)
+        toast('已删除候选人', 'success')
+        await refreshTaskModal()
+        await reloadDetail()
+        if (state.view === 'tasks') await loadTasks()
+    },
+    'task-toggle': async (el) => {
+        const suspended = el.dataset.suspended === '1'
+        await withBusy(el, () => api.post(`/api/tasks/${enc(el.dataset.id)}/${suspended ? 'activate' : 'suspend'}`))
+        toast(suspended ? '任务已激活' : '任务已挂起', 'success')
+        if (state.detailId) await reloadDetail()
+        if (state.view === 'tasks') await loadTasks()
+    },
+    'task-page': (el) => {
+        state.taskPage = Number(el.dataset.page) || 1
+        loadTasks().catch(handleError)
+    },
+
+    /* ---- 流程定义 ---- */
+    'xml-view': (el) => openXmlModal(el.dataset.id, false).catch(handleError),
+    'xml-edit': (el) => openXmlModal(el.dataset.id, true).catch(handleError),
+    'xml-reset': () => {
+        const editor = $('xmlEditor')
+        if (editor) editor.value = state.xmlOriginal || ''
+    },
+    'xml-save': async (el) => {
+        const editor = $('xmlEditor')
+        if (!editor || !editor.value.trim()) {
+            toast('XML 内容不能为空', 'error')
+            return
+        }
+        const ok = await askDialog({
+            title: '保存流程定义 XML',
+            message: '修改会覆盖该部署的 BPMN 资源，影响后续所有新建实例。<br>正在运行的实例不会自动迁移，确定保存吗？',
+            confirmText: '确认保存',
+            danger: true
+        })
+        if (ok === null) return
+        await withBusy(el, () => api.put(`/api/definitions/${enc(el.dataset.id)}/xml`, { xml: editor.value }))
+        closeModal()
+        toast('流程图已保存', 'success')
+        state.definitions = await api.get('/api/definitions')
+        if (state.view === 'definitions') await loadDefinitionsView()
+        if (state.detailTab === 'xml') {
+            state.detailData.xml = null
+            await ensureDrawerXml()
+            renderDrawer()
+        }
+    },
+    'xml-copy': async () => {
+        try {
+            await navigator.clipboard.writeText(state.detailData.xml || '')
+            toast('XML 已复制到剪贴板', 'success')
+        } catch (error) {
+            toast('复制失败，请手动选择文本', 'error')
+        }
+    },
+    'def-nodes': (el) => openDefinitionNodes(el.dataset.id).catch(handleError),
+    'def-toggle': async (el) => {
+        const suspended = el.dataset.suspended === '1'
+        const ok = await askDialog({
+            title: suspended ? '激活流程定义' : '挂起流程定义',
+            message: suspended
+                ? '激活后可以继续使用该定义发起新实例。'
+                : '挂起后该定义不能再发起新实例，已运行的实例不受影响。',
+            confirmText: suspended ? '激活' : '挂起',
+            danger: !suspended
+        })
+        if (ok === null) return
+        await api.post(`/api/definitions/${enc(el.dataset.id)}/${suspended ? 'activate' : 'suspend'}`)
+        toast(suspended ? '流程定义已激活' : '流程定义已挂起', 'success')
+        await loadDefinitionsView()
+    },
+    'job-state': (el) => {
+        state.jobState = el.dataset.state || ''
+        markActiveSegments()
+        loadJobs().catch(handleError)
+    },
+
+    /* ---- 作业 ---- */
+    'job-execute': async (el) => {
+        await withBusy(el, () => api.post(`/api/jobs/${enc(el.dataset.id)}/execute`, { source: el.dataset.source }))
+        toast('已将作业到期时间设为当前时间', 'success')
+        await loadJobs()
+        if (state.view === 'overview') await loadOverview()
+    },
+    'job-retry': async (el) => {
+        const ok = await askDialog({
+            title: '重置作业重试次数',
+            message: `将作业 <code>${esc(el.dataset.id)}</code> 的重试次数重置为 3，以便作业执行器再次尝试。`,
+            confirmText: '重置为 3 次'
+        })
+        if (ok === null) return
+        await api.post(`/api/jobs/${enc(el.dataset.id)}/retries`, { source: el.dataset.source, retries: 3 })
+        toast('重试次数已重置', 'success')
+        await loadJobs()
+    },
+    'job-delete': async (el) => {
+        const ok = await askDialog({
+            title: '删除作业',
+            message: `确定删除该作业吗？删除后不会再被调度。<br>作业ID：<code>${esc(el.dataset.id)}</code>`,
+            confirmText: '删除',
+            danger: true
+        })
+        if (ok === null) return
+        await api.delete(`/api/jobs/${enc(el.dataset.id)}?source=${enc(el.dataset.source)}`)
+        toast('作业已删除', 'success')
+        await loadJobs()
+        if (state.view === 'overview') await loadOverview()
+    },
+    'job-detail': async (el) => {
+        const data = await api.get(`/api/jobs?size=200`)
+        const job = (data.items || []).find((item) => item.id === el.dataset.id)
+        if (!job) {
+            toast('未找到该作业，可能已被执行或删除', 'info')
+            return
+        }
+        const rows = [
+            ['作业ID', `<code>${esc(job.id)}</code>`],
+            ['类型', esc(job.sourceLabel)],
+            ['处理器', esc(job.handlerType || job.type || '—')],
+            ['流程实例', job.processInstanceId ? `<button type="button" class="link-btn mono" data-action="open-instance" data-id="${esc(job.processInstanceId)}">${esc(job.processInstanceId)}</button>` : '—'],
+            ['执行实例', esc(job.executionId || '—')],
+            ['重试次数', job.retries === null ? '—' : String(job.retries)],
+            ['到期时间', esc(fmtTime(job.dueDate))],
+            ['锁定者', esc(job.lockOwner || '—')]
+        ]
+        const body = `
+            <div class="info-grid">
+                ${rows.map(([label, value]) => `<div class="info-item"><span>${label}</span><div>${value}</div></div>`).join('')}
+            </div>
+            <h4 class="section-title">异常信息</h4>
+            <pre class="code-block code-block-sm">${esc(job.exceptionMessage || '无异常信息')}</pre>
+        `
+        openModal(modalShell('作业详情', body, `
+            <button type="button" class="btn btn-secondary" data-action="modal-close">关闭</button>
+            ${['async', 'timer'].includes(job.source)
+                ? `<button type="button" class="btn btn-primary" data-action="job-execute" data-id="${esc(job.id)}" data-source="${esc(job.source)}">立即执行</button>`
+                : ''}
+        `), 'md')
+    },
+
+    /* ---- 操作日志 ---- */
+    'audit-clear': async () => {
+        const ok = await askDialog({
+            title: '清空操作日志',
+            message: '将删除本机保存的所有操作记录，不影响数据库。确定清空吗？',
+            confirmText: '清空',
+            danger: true
+        })
+        if (ok === null) return
+        await api.delete('/api/audit-logs')
+        toast('操作日志已清空', 'success')
+        await loadAudit()
+    }
+}
+
+/* ============================ 事件绑定 ============================ */
+
+document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-action]')
+    if (trigger) {
+        const handler = actions[trigger.dataset.action]
+        if (handler) {
+            event.preventDefault()
+            Promise.resolve(handler(trigger, event)).catch(handleError)
+            return
         }
     }
-    
-    if (callback) callback(users)
-}
-
-function selectUser(userId, username, realname, inputId) {
-    const input = document.getElementById(inputId)
-    input.value = userId
-    input.setAttribute('data-username', username)
-    input.setAttribute('data-realname', realname)
-    
-    const dropdown = input.nextElementSibling
-    if (dropdown && dropdown.classList.contains('user-dropdown')) {
-        dropdown.style.display = 'none'
-    }
-}
-
-function clearUserSelection(inputId) {
-    const input = document.getElementById(inputId)
-    input.value = ''
-    input.removeAttribute('data-username')
-    input.removeAttribute('data-realname')
-    
-    const dropdown = input.nextElementSibling
-    if (dropdown && dropdown.classList.contains('user-dropdown')) {
-        dropdown.style.display = 'none'
-    }
-}
-
-function closeUserDropdowns() {
-    document.querySelectorAll('.user-dropdown').forEach(dropdown => {
-        dropdown.style.display = 'none'
-    })
-}
-
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.user-selector')) {
-        closeUserDropdowns()
+    const nav = event.target.closest('[data-nav]')
+    if (nav) {
+        setView(nav.dataset.nav)
     }
 })
 
-// 编辑历史任务模态框
-let currentHistoryTaskId = null
-
-function openEditHistoryTaskModal(taskId, taskName, assignee, endTime) {
-    currentHistoryTaskId = taskId
-    
-    document.getElementById('editHistoryTaskName').value = taskName
-    document.getElementById('editHistoryAssignee').value = assignee
-    document.getElementById('editHistoryAssignee').setAttribute('data-realname', '')
-    
-    if (endTime) {
-        const date = new Date(endTime)
-        document.getElementById('editHistoryEndTime').value = date.toISOString().slice(0, 16)
-    } else {
-        document.getElementById('editHistoryEndTime').value = ''
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        if (!$('modalRoot').hidden) {
+            closeModal(null)
+            return
+        }
+        if (!$('drawerRoot').hidden) closeDrawer()
     }
-    
-    document.getElementById('editHistoryTaskModal').classList.add('show')
+    if (event.key === 'Enter' && event.target.matches('input[type="search"]')) {
+        applySearch(event.target.id)
+    }
+})
+
+function applySearch(id) {
+    if (id === 'instanceKeyword') {
+        state.instanceKeyword = $('instanceKeyword').value.trim()
+        state.instancePage = 1
+        loadInstances().catch(handleError)
+    } else if (id === 'taskKeyword') {
+        state.taskKeyword = $('taskKeyword').value.trim()
+        state.taskPage = 1
+        loadTasks().catch(handleError)
+    } else if (id === 'jobKeyword') {
+        state.jobKeyword = $('jobKeyword').value.trim()
+        loadJobs().catch(handleError)
+    } else if (id === 'definitionKeyword') {
+        state.definitionKeyword = $('definitionKeyword').value.trim()
+        loadDefinitionsView().catch(handleError)
+    }
 }
 
-async function saveHistoryTaskEdit() {
-    if (!currentHistoryTaskId) return
-    
-    const taskName = document.getElementById('editHistoryTaskName').value
-    const assignee = document.getElementById('editHistoryAssignee').value
-    const endTime = document.getElementById('editHistoryEndTime').value
-    
-    if (!taskName) {
-        alert('请输入任务名称')
-        return
-    }
-    
-    if (!assignee) {
-        alert('请选择审批人')
-        return
-    }
-    
-    const result = await api.put(`/api/history-tasks/${currentHistoryTaskId}/assignee`, {
-        taskName,
-        assignee,
-        endTime: endTime ? new Date(endTime).toISOString() : null
+let definitionSearchTimer = null
+
+function bindStaticEvents() {
+    $('connType').addEventListener('change', (event) => {
+        const type = event.target.value
+        $('connPort').value = defaultPort(type)
+        $('schemaField').hidden = type === 'mysql'
+        $('connDatabase').innerHTML = '<option value="">先测试连接获取数据库</option>'
+        $('connDatabase').disabled = true
+        $('connSchema').innerHTML = '<option value="">先选择数据库</option>'
+        $('connSchema').disabled = true
+        setConnMessage('')
     })
-    
-    if (result.success) {
-        alert('修改成功')
-        document.getElementById('editHistoryTaskModal').classList.remove('show')
-        showInstanceDetail(state.currentInstanceId)
-    } else {
-        alert('修改失败: ' + result.error)
-    }
+
+    $('connDatabase').addEventListener('change', async (event) => {
+        const database = event.target.value
+        if (!database) return
+        if ($('connType').value === 'mysql') {
+            setConnMessage(`已选择数据库 ${database}`, 'success')
+            return
+        }
+        try {
+            await loadSchemaList(database)
+        } catch (error) {
+            setConnMessage(error.message, 'error')
+        }
+    })
+
+    $('connectionForm').addEventListener('submit', (event) => {
+        event.preventDefault()
+        connectDatabase($('connectButton')).catch(handleError)
+    })
+
+    $('instanceDefFilter').addEventListener('change', (event) => {
+        state.instanceDefKey = event.target.value
+        state.instancePage = 1
+        loadInstances().catch(handleError)
+    })
+
+    $('taskDefFilter').addEventListener('change', (event) => {
+        state.taskDefKey = event.target.value
+        state.taskPage = 1
+        loadTasks().catch(handleError)
+    })
+
+    $('taskAssigneeFilter').addEventListener('change', (event) => {
+        state.taskAssignee = event.target.value
+        state.taskPage = 1
+        loadTasks().catch(handleError)
+    })
+
+    $('definitionKeyword').addEventListener('input', (event) => {
+        clearTimeout(definitionSearchTimer)
+        const keyword = event.target.value.trim()
+        definitionSearchTimer = setTimeout(() => {
+            state.definitionKeyword = keyword
+            loadDefinitionsView().catch(handleError)
+        }, 350)
+    })
+
+    // 搜索框输入时防抖，清空时立即刷新
+    const searchInputs = [
+        ['instanceKeyword', () => { state.instanceKeyword = $('instanceKeyword').value.trim(); state.instancePage = 1; return loadInstances() }],
+        ['taskKeyword', () => { state.taskKeyword = $('taskKeyword').value.trim(); state.taskPage = 1; return loadTasks() }],
+        ['jobKeyword', () => { state.jobKeyword = $('jobKeyword').value.trim(); return loadJobs() }]
+    ]
+    searchInputs.forEach(([id, reload]) => {
+        const input = $(id)
+        let timer = null
+        input.addEventListener('input', () => {
+            clearTimeout(timer)
+            timer = setTimeout(() => { reload().catch(handleError) }, 400)
+        })
+        input.addEventListener('search', () => {
+            clearTimeout(timer)
+            reload().catch(handleError)
+        })
+    })
 }
 
-function closeEditHistoryTaskModal() {
-    document.getElementById('editHistoryTaskModal').classList.remove('show')
-    currentHistoryTaskId = null
+function markActiveSegments() {
+    document.querySelectorAll('#instanceStatusTabs button').forEach((button) => {
+        button.classList.toggle('is-active', button.dataset.status === state.instanceStatus)
+    })
+    document.querySelectorAll('#jobStateTabs button').forEach((button) => {
+        button.classList.toggle('is-active', (button.dataset.state || '') === state.jobState)
+    })
 }
 
-// 刷新用户缓存
-function refreshUserCache() {
-    cachedUsers = []
-    cacheTimestamp = 0
+async function init() {
+    bindStaticEvents()
+    markActiveSegments()
+    resetConnectionForm()
+    await loadSavedConnections()
+    await checkConnection()
 }
 
-// 启动应用
 init()

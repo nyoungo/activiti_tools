@@ -3,203 +3,293 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Activiti 工作流维护工具</title>
+    <title>Activiti 工作流运维工具</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%233b5bfd'/%3E%3Ctext x='32' y='44' font-size='36' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <div id="app">
-        <!-- 主内容区 -->
-        <main class="main-content-full">
-            <!-- 数据库连接页面（初始页面） -->
-            <section id="page-connection" class="page active">
-                <div class="page-header">
-                    <h2>数据库连接</h2>
+    <!-- ================= 连接页面 ================= -->
+    <section id="connectionScreen" class="auth-screen">
+        <div class="auth-panel">
+            <header class="auth-brand">
+                <div class="brand-mark">A</div>
+                <div>
+                    <h1>Activiti 工作流运维工具</h1>
+                    <p>连接 Activiti 6.0 数据库，完成实例、任务、定义与作业的日常运维</p>
                 </div>
-                <div class="content-box">
-                    <div class="connection-form">
-                        <div class="form-group">
-                            <label>已保存的配置</label>
-                            <div style="display: flex; gap: 12px; align-items: center;">
-                                <select id="savedConnections" style="flex: 1;">
-                                    <option value="">-- 选择配置 --</option>
-                                </select>
-                                <button id="deleteConnection" class="btn btn-danger btn-small" style="display:none; flex-shrink: 0;">删除</button>
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>连接名称</label>
-                                <input type="text" id="connName" placeholder="我的数据库">
-                            </div>
-                            <div class="form-group">
-                                <label>数据库类型</label>
-                                <select id="connType">
+                <span class="version-chip">v2.0</span>
+            </header>
+
+            <div class="auth-body">
+                <aside class="saved-panel">
+                    <div class="saved-head">
+                        <h3>已保存的连接</h3>
+                        <button type="button" class="btn btn-ghost btn-xs" data-action="conn-new">新建</button>
+                    </div>
+                    <div id="savedConnectionList" class="saved-list"></div>
+                </aside>
+
+                <form id="connectionForm" class="conn-form" autocomplete="off">
+                    <div class="form-grid">
+                        <label class="field field-span-2">
+                            <span>连接名称</span>
+                            <input type="text" id="connName" placeholder="例如：测试环境 Activiti" maxlength="100">
+                        </label>
+                        <label class="field">
+                            <span>数据库类型</span>
+                            <select id="connType">
                                 <option value="mysql">MySQL</option>
                                 <option value="postgres">PostgreSQL</option>
                                 <option value="hgdatabase">瀚高数据库</option>
                             </select>
+                        </label>
+                        <label class="field">
+                            <span>端口</span>
+                            <input type="number" id="connPort" placeholder="3306" min="1" max="65535">
+                        </label>
+                        <label class="field">
+                            <span>主机</span>
+                            <input type="text" id="connHost" placeholder="localhost">
+                        </label>
+                        <label class="field">
+                            <span>数据库</span>
+                            <div class="field-inline">
+                                <select id="connDatabase" disabled>
+                                    <option value="">先测试连接获取数据库</option>
+                                </select>
+                                <button type="button" class="btn btn-ghost btn-xs" data-action="conn-load-databases" title="重新获取数据库列表">刷新</button>
                             </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>主机</label>
-                                <input type="text" id="connHost" placeholder="localhost">
-                            </div>
-                            <div class="form-group">
-                                <label>端口</label>
-                                <input type="number" id="connPort" placeholder="3306">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>用户名</label>
-                                <input type="text" id="connUser" placeholder="root">
-                            </div>
-                            <div class="form-group">
-                                <label>密码</label>
-                                <input type="password" id="connPass" placeholder="密码">
-                            </div>
-                        </div>
-                        <div class="form-group" id="dbNameGroup">
-                            <label>数据库名称</label>
-                            <input type="text" id="connDbName" placeholder="activiti">
-                        </div>
-                        <div class="form-group" id="schemaGroup" style="display: none;">
-                            <label>Schema</label>
-                            <select id="connSchema">
-                                <option value="">-- 选择 Schema --</option>
+                        </label>
+                        <label class="field">
+                            <span>用户名</span>
+                            <input type="text" id="connUser" placeholder="root">
+                        </label>
+                        <label class="field">
+                            <span>密码</span>
+                            <input type="password" id="connPass" placeholder="数据库密码">
+                        </label>
+                        <label class="field" id="schemaField" hidden>
+                            <span>Schema</span>
+                            <select id="connSchema" disabled>
+                                <option value="">先选择数据库</option>
                             </select>
-                        </div>
-                        <div class="button-group">
-                            <button class="btn btn-secondary" onclick="testConnection()">测试连接</button>
-                            <button class="btn btn-primary" onclick="connectDatabase()">连接</button>
-                        </div>
+                        </label>
                     </div>
-                </div>
-            </section>
 
-            <!-- 工作空间页面 -->
-            <section id="page-workspace" class="page">
-                <div class="page-header">
-                    <h2>Activiti工作流维护工具</h2>
-                    <div class="header-right">
-                        <button class="btn btn-secondary btn-small" onclick="switchConnection()">切换数据库</button>
+                    <div id="connMessage" class="form-message" role="status"></div>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" data-action="conn-test">测试连接</button>
+                        <button type="button" class="btn btn-secondary" data-action="conn-save">保存配置</button>
+                        <button type="submit" id="connectButton" class="btn btn-primary">连接数据库</button>
+                    </div>
+                    <p class="form-hint">连接信息保存在本机 <code>config.db</code> 中，密码以明文存储，请勿在公共电脑上使用。</p>
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <!-- ================= 工作台 ================= -->
+    <div id="workspace" class="workspace" hidden>
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-mark brand-mark-sm">A</div>
+                <div>
+                    <strong>Activiti 运维</strong>
+                    <span>Workflow Console</span>
+                </div>
+            </div>
+
+            <nav class="nav" id="mainNav">
+                <button type="button" class="nav-item" data-nav="overview">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                    <span>概览</span>
+                </button>
+                <button type="button" class="nav-item" data-nav="instances">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 7.5 12 12l9-4.5L12 3Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+                    <span>流程实例</span>
+                </button>
+                <button type="button" class="nav-item" data-nav="tasks">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h10M9 12h10M9 19h10"/><path d="m3 5 1.4 1.4L7 3.8"/><path d="m3 12 1.4 1.4L7 10.8"/><path d="m3 19 1.4 1.4L7 17.8"/></svg>
+                    <span>待办任务</span>
+                </button>
+                <button type="button" class="nav-item" data-nav="definitions">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.5 6h7M6 8.5V12a2 2 0 0 0 2 2h1.5M18 8.5V12a2 2 0 0 1-2 2h-1.5"/></svg>
+                    <span>流程定义</span>
+                </button>
+                <button type="button" class="nav-item" data-nav="jobs">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg>
+                    <span>定时作业</span>
+                </button>
+                <button type="button" class="nav-item" data-nav="audit">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+                    <span>操作日志</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="conn-card">
+                    <div class="conn-card-head">
+                        <span class="dot dot-on"></span>
+                        <span id="sidebarConnName">已连接</span>
+                    </div>
+                    <div id="sidebarConnInfo" class="conn-card-info">-</div>
+                    <div class="conn-card-actions">
+                        <button type="button" class="btn btn-ghost btn-xs" data-action="switch-database">切换</button>
+                        <button type="button" class="btn btn-ghost btn-xs" data-action="disconnect">断开</button>
                     </div>
                 </div>
-                
-                <!-- 标签页导航 -->
-                <div class="tabs">
-                    <button class="tab-btn active" data-tab="tab-instances">流程实例</button>
-                    <button class="tab-btn" data-tab="tab-definitions">流程定义</button>
+            </div>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <div>
+                    <h2 id="pageTitle">概览</h2>
+                    <p id="pageSubtitle" class="page-subtitle"></p>
                 </div>
-                
-                <!-- 流程实例标签页 -->
-                <div id="tab-instances" class="tab-content active">
-                    <div class="tab-header">
-                        <div class="tab-filters">
-                            <select id="instanceFilter" onchange="loadInstances()">
-                                <option value="running">运行中</option>
-                                <option value="finished">已结束</option>
-                                <option value="all">全部</option>
+                <div class="topbar-actions">
+                    <span id="userTableHint" class="hint-chip" hidden>未找到 sys_user 表，用户显示为 ID</span>
+                    <button type="button" class="btn btn-secondary btn-sm" data-action="refresh-view">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 4v7h-7"/></svg>
+                        刷新
+                    </button>
+                </div>
+            </header>
+
+            <div class="content">
+                <!-- 概览 -->
+                <section class="view" id="view-overview" hidden>
+                    <div id="overviewStats" class="stat-grid"></div>
+                    <div class="panel-grid">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h3>运行中的流程</h3>
+                                <button type="button" class="link-btn" data-nav="instances">查看全部</button>
+                            </div>
+                            <div id="overviewInstances" class="panel-body"></div>
+                        </section>
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h3>异常作业</h3>
+                                <button type="button" class="link-btn" data-nav="jobs">作业管理</button>
+                            </div>
+                            <div id="overviewJobs" class="panel-body"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <!-- 流程实例 -->
+                <section class="view" id="view-instances" hidden>
+                    <div class="toolbar">
+                        <div class="segmented" id="instanceStatusTabs">
+                            <button type="button" data-action="instance-status" data-status="running">运行中</button>
+                            <button type="button" data-action="instance-status" data-status="finished">已结束</button>
+                            <button type="button" data-action="instance-status" data-status="all">全部</button>
+                        </div>
+                        <div class="toolbar-right">
+                            <select id="instanceDefFilter" class="control" data-action="instance-def-filter">
+                                <option value="">全部流程</option>
+                            </select>
+                            <div class="search-input">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                                <input type="search" id="instanceKeyword" placeholder="实例ID / 业务键 / 流程名 / 发起人">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-card">
+                        <div id="instancesTable" class="table-wrap"></div>
+                        <div id="instancesPager" class="pager"></div>
+                    </div>
+                </section>
+
+                <!-- 待办任务 -->
+                <section class="view" id="view-tasks" hidden>
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <select id="taskAssigneeFilter" class="control" data-action="task-assignee-filter">
+                                <option value="">全部处理人</option>
+                                <option value="unassigned">仅未分配</option>
+                            </select>
+                            <select id="taskDefFilter" class="control" data-action="task-def-filter">
+                                <option value="">全部流程</option>
                             </select>
                         </div>
-                    </div>
-                    <div id="instancesList" class="table-container"></div>
-                    <div id="instancesPagination" class="pagination"></div>
-                </div>
-                
-                <!-- 流程定义标签页 -->
-                <div id="tab-definitions" class="tab-content">
-                    <div class="tab-header">
-                        <div class="tab-filters">
-                            <input type="text" id="definitionSearch" placeholder="搜索流程定义..." onkeyup="loadDefinitions()">
+                        <div class="toolbar-right">
+                            <div class="search-input">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                                <input type="search" id="taskKeyword" placeholder="任务名 / 处理人 / 实例ID / 流程名">
+                            </div>
                         </div>
                     </div>
-                    <div id="definitionsList" class="table-container"></div>
-                    <div id="definitionsPagination" class="pagination"></div>
-                </div>
-            </section>
+                    <div class="table-card">
+                        <div id="tasksTable" class="table-wrap"></div>
+                        <div id="tasksPager" class="pager"></div>
+                    </div>
+                </section>
+
+                <!-- 流程定义 -->
+                <section class="view" id="view-definitions" hidden>
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <span id="definitionCount" class="muted"></span>
+                        </div>
+                        <div class="toolbar-right">
+                            <div class="search-input">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                                <input type="search" id="definitionKeyword" placeholder="流程名称 / Key / 分类">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-card">
+                        <div id="definitionsTable" class="table-wrap"></div>
+                    </div>
+                </section>
+
+                <!-- 定时作业 -->
+                <section class="view" id="view-jobs" hidden>
+                    <div class="toolbar">
+                        <div class="segmented" id="jobStateTabs">
+                            <button type="button" data-action="job-state" data-state="">全部</button>
+                            <button type="button" data-action="job-state" data-state="failed">失败重试为 0</button>
+                        </div>
+                        <div class="toolbar-right">
+                            <div class="search-input">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                                <input type="search" id="jobKeyword" placeholder="作业ID / 流程实例 / 异常信息">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-card">
+                        <div id="jobsTable" class="table-wrap"></div>
+                    </div>
+                </section>
+
+                <!-- 操作日志 -->
+                <section class="view" id="view-audit" hidden>
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <span class="muted">仅记录本工具执行的高危操作，保存在本机</span>
+                        </div>
+                        <div class="toolbar-right">
+                            <button type="button" class="btn btn-danger-ghost btn-sm" data-action="audit-clear">清空日志</button>
+                        </div>
+                    </div>
+                    <div class="table-card">
+                        <div id="auditTable" class="table-wrap"></div>
+                    </div>
+                </section>
+            </div>
         </main>
     </div>
 
-    <!-- 流程实例详情模态框 -->
-    <div id="instanceDetailModal" class="modal">
-        <div class="modal-content modal-large">
-            <div class="modal-header">
-                <h3>流程实例详情</h3>
-                <button class="modal-close" onclick="closeInstanceDetail()">&times;</button>
-            </div>
-            <div class="modal-body" id="instanceDetailContent"></div>
-        </div>
-    </div>
+    <!-- 通用弹层 / 抽屉 / 提示 -->
+    <div id="modalRoot" class="modal-root" hidden></div>
+    <div id="drawerRoot" class="drawer-root" hidden></div>
+    <div id="toastRoot" class="toast-root" aria-live="polite"></div>
 
-    <!-- 流程变量模态框 -->
-    <div id="variablesModal" class="modal">
-        <div class="modal-content modal-large">
-            <div class="modal-header">
-                <h3>流程变量</h3>
-                <button class="modal-close" onclick="closeVariablesModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="variablesList" class="table-container"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 流程定义XML模态框 -->
-    <div id="xmlModal" class="modal">
-        <div class="modal-content modal-large" style="max-width: 95vw; max-height: 95vh;">
-            <div class="modal-header">
-                <h3>流程定义 XML</h3>
-                <button class="modal-close" onclick="closeXmlModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="affectedInstancesInfo" style="display: none; margin-bottom: 12px;"></div>
-                <textarea id="xmlContent" readonly style="min-height: 500px;"></textarea>
-                <div id="xmlActions" style="margin-top: 12px; display: none;">
-                    <button class="btn btn-primary" onclick="saveXml()">保存修改</button>
-                    <button class="btn btn-secondary" onclick="resetXml()">重置</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 编辑历史任务模态框 -->
-    <div id="editHistoryTaskModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>编辑历史审批记录</h3>
-                <button class="modal-close" onclick="closeEditHistoryTaskModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>任务名称</label>
-                    <input type="text" id="editHistoryTaskName">
-                </div>
-                <div class="form-group">
-                    <label>审批人</label>
-                    <div class="user-selector">
-                        <input type="text" id="editHistoryAssignee" placeholder="搜索或选择用户..." onkeyup="searchUsers(this)">
-                        <div class="user-dropdown" style="display: none;"></div>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>审批时间</label>
-                    <input type="datetime-local" id="editHistoryEndTime">
-                </div>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="saveHistoryTaskEdit()">保存修改</button>
-                    <button class="btn btn-secondary" onclick="closeEditHistoryTaskModal()">取消</button>
-                </div>
-            </div>
-        </div>
-    </div>
+    <datalist id="userOptions"></datalist>
 
     <script src="js/app.js"></script>
-    
-    <!-- 版权信息 -->
-    <footer class="footer">
-        <p>© 2026 Nyoung. All rights reserved.</p>
-    </footer>
 </body>
 </html>
