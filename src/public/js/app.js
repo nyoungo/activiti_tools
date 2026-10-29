@@ -1047,6 +1047,8 @@ function renderDrawerTab() {
                                 <button type="button" class="btn btn-ghost btn-xs" data-action="history-edit" data-id="${esc(task.id)}">编辑</button>
                                 <button type="button" class="btn btn-ghost btn-xs" data-action="history-jump"
                                     data-id="${esc(task.id)}" data-name="${esc(task.name || task.id)}">${task.endTime ? '退回此处' : '当前节点'}</button>
+                                ${task.endTime ? `<button type="button" class="btn btn-danger-ghost btn-xs" data-action="history-delete"
+                                    data-id="${esc(task.id)}" data-name="${esc(task.name || task.id)}">删除</button>` : ''}
                             </td>
                         </tr>
                     `).join('')}
@@ -2458,6 +2460,21 @@ const actions = {
         if (state.view === 'instances') await loadInstances()
         if (state.view === 'overview') await loadOverview()
         if (data && data.warnings) data.warnings.forEach((warning) => toast(warning, 'info'))
+    },
+    'history-delete': async (el) => {
+        const ok = await askDialog({
+            title: '删除历史任务',
+            message: `确定删除历史任务 <strong>${esc(el.dataset.name)}</strong> 吗？<br>
+                · 该任务的审批意见、候选人记录会一并删除<br>
+                · 对应的流转记录也会被清理<br>
+                · 此操作不可恢复`,
+            confirmText: '删除',
+            danger: true
+        })
+        if (ok === null) return
+        await withBusy(el, () => api.delete(`/api/history-tasks/${enc(el.dataset.id)}`))
+        toast('历史任务已删除', 'success')
+        await reloadDetail()
     },
 
     /* ---- 任务 ---- */

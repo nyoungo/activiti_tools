@@ -1514,7 +1514,7 @@ async function listHistoryTasks(instanceId) {
                 t.PROC_INST_ID_ AS "procInstId", t.EXECUTION_ID_ AS "executionId", t.PRIORITY_ AS "priority"
          FROM act_hi_taskinst t
          WHERE t.PROC_INST_ID_ = ?
-         ORDER BY t.START_TIME_ DESC`,
+         ORDER BY t.START_TIME_ ASC, t.ID_ ASC`,
         [instanceId]
     )
 
@@ -1605,6 +1605,32 @@ async function updateHistoryTask(taskId, payload) {
         }
         return { action: 'unchanged' }
     })
+}
+
+async function deleteHistoryTask(taskId) {
+    if (!hasTable('act_hi_taskinst')) throw new ApiError('当前数据库没有历史任务表')
+    const rows = await query(
+        'SELECT ID_ AS "id", END_TIME_ AS "endTime" FROM act_hi_taskinst WHERE ID_ = ?',
+        [taskId]
+    )
+    if (rows.length === 0) throw new ApiError('历史任务不存在', 404)
+    // 运行中的任务对应流程当前节点,删除历史记录会破坏运行态,直接拒绝
+    if (!rows[0].endTime) throw new ApiError('该任务正在运行中,不能删除')
+
+    await withTransaction(async (tx) => {
+        // 先按 TASK_ID_ 清理关联的候选人、审批意见与流转记录,再删任务本身
+        if (hasTable('act_hi_identitylink')) {
+            await tx.execute('DELETE FROM act_hi_identitylink WHERE TASK_ID_ = ?', [taskId])
+        }
+        if (hasTable('act_hi_comment')) {
+            await tx.execute('DELETE FROM act_hi_comment WHERE TASK_ID_ = ?', [taskId])
+        }
+        if (hasTable('act_hi_actinst')) {
+            await tx.execute('DELETE FROM act_hi_actinst WHERE TASK_ID_ = ?', [taskId])
+        }
+        await tx.execute('DELETE FROM act_hi_taskinst WHERE ID_ = ?', [taskId])
+    })
+    return { action: 'deleted' }
 }
 
 // ==================== 任务 ====================
@@ -2851,6 +2877,12 @@ app.put('/api/history-tasks/:taskId', requireConnection, wrap(async (req, res) =
     const result = await updateHistoryTask(req.params.taskId, req.body || {})
     logAudit('修改历史任务', req.params.taskId)
     res.json({ success: true, ...(result || {}) })
+}))
+
+app.delete('/api/history-tasks/:taskId', requireConnection, wrap(async (req, res) => {
+    await deleteHistoryTask(req.params.taskId)
+    logAudit('删除历史任务', req.params.taskId)
+    res.json({ success: true })
 }))
 
 // 兼容旧前端调用
