@@ -268,7 +268,7 @@ function openModal(html, size = 'md') {
     destroyBpmnHost(root.querySelector('[data-bpmn-editor]'))
     root.hidden = false
     root.innerHTML = `<div class="modal-backdrop" data-action="modal-close"></div><div class="modal modal-${size}" role="dialog" aria-modal="true">${html}</div>`
-    document.body.classList.add('modal-open')
+    syncBodyLock()
 }
 
 function closeModal(result = null) {
@@ -276,7 +276,7 @@ function closeModal(result = null) {
     destroyBpmnHost(root.querySelector('[data-bpmn-editor]'))
     root.hidden = true
     root.innerHTML = ''
-    if ($('dialogRoot').hidden) document.body.classList.remove('modal-open')
+    syncBodyLock()
     return result
 }
 
@@ -286,17 +286,26 @@ function openDialog(html) {
     const root = $('dialogRoot')
     root.hidden = false
     root.innerHTML = `<div class="modal-backdrop" data-action="dialog-cancel"></div><div class="modal modal-sm" role="dialog" aria-modal="true">${html}</div>`
-    document.body.classList.add('modal-open')
+    syncBodyLock()
 }
 
 function closeDialog(result = null) {
     const root = $('dialogRoot')
     root.hidden = true
     root.innerHTML = ''
-    if ($('modalRoot').hidden) document.body.classList.remove('modal-open')
+    syncBodyLock()
     const resolve = dialogResolver
     dialogResolver = null
     if (resolve) resolve(result)
+}
+
+// 多个弹层可能同时打开，统一按「是否还有可见弹层」决定是否锁定页面滚动
+function syncBodyLock() {
+    const anyOpen = ['modalRoot', 'dialogRoot', 'drawerRoot'].some((id) => {
+        const el = $(id)
+        return el && !el.hidden
+    })
+    document.body.classList.toggle('modal-open', anyOpen)
 }
 
 function askDialog(options = {}) {
@@ -571,7 +580,7 @@ function showConnectionScreen() {
     $('workspace').hidden = true
     $('connectionScreen').hidden = false
     $('drawerRoot').hidden = true
-    document.body.classList.remove('drawer-open')
+    syncBodyLock()
     renderSavedConnections()
 }
 
@@ -772,7 +781,7 @@ function renderPager(container, total, page, size, action) {
     `
 }
 
-/* ============================ 流程实例详情抽屉 ============================ */
+/* ============================ 流程实例详情弹窗 ============================ */
 
 async function openInstance(id) {
     state.detailId = id
@@ -781,7 +790,7 @@ async function openInstance(id) {
     state.detailDiagramMode = 'graph'
     state.detailData = { variables: [], history: [], activities: [], xml: null }
     $('drawerRoot').hidden = false
-    document.body.classList.add('drawer-open')
+    syncBodyLock()
     renderDrawer()
     try {
         await reloadDetail()
@@ -816,7 +825,7 @@ function closeDrawer() {
     state.detailData = { variables: [], history: [], activities: [], xml: null }
     $('drawerRoot').hidden = true
     $('drawerRoot').innerHTML = ''
-    document.body.classList.remove('drawer-open')
+    syncBodyLock()
 }
 
 function renderDrawer() {
@@ -829,7 +838,10 @@ function renderDrawer() {
 
     if (!detail) {
         root.innerHTML = `<div class="drawer-backdrop" data-action="close-drawer"></div>
-            <aside class="drawer"><div class="drawer-loading"><span class="spinner"></span>加载实例详情…</div></aside>`
+            <aside class="drawer" role="dialog" aria-modal="true" aria-label="实例详情">
+                <div class="drawer-loading"><span class="spinner"></span>加载实例详情…</div>
+            </aside>`
+        syncBodyLock()
         return
     }
 
@@ -847,7 +859,7 @@ function renderDrawer() {
 
     root.innerHTML = `
         <div class="drawer-backdrop" data-action="close-drawer"></div>
-        <aside class="drawer" role="dialog" aria-modal="true">
+        <aside class="drawer" role="dialog" aria-modal="true" aria-label="实例详情">
             <header class="drawer-head">
                 <div class="drawer-head-main">
                     <div class="drawer-eyebrow">
@@ -884,9 +896,10 @@ function renderDrawer() {
                     </button>`).join('')}
             </nav>
 
-            <div class="drawer-body">${renderDrawerTab()}</div>
+            <div class="drawer-body${state.detailTab === 'xml' ? ' drawer-body-flush' : ''}">${renderDrawerTab()}</div>
         </aside>
     `
+    syncBodyLock()
 
     // 流程图标签页渲染完成后挂载 bpmn 实例（容器必须已在文档中）
     if (state.detailTab === 'xml' && dataReadyForDiagram()) mountDrawerDiagram()
@@ -1477,6 +1490,7 @@ function openHistoryTaskModal(task) {
 // bpmn-js 按需加载：只有打开流程图时才拉取资源，避免拖慢首屏
 const bpmnAssets = {
     cssLoaded: false,
+    descriptor: null,
     bundles: {
         viewer: { src: 'vendor/bpmn-js/bpmn-navigated-viewer.production.min.js', ctor: null },
         modeler: { src: 'vendor/bpmn-js/bpmn-modeler.production.min.js', ctor: null }
@@ -1485,6 +1499,15 @@ const bpmnAssets = {
 
 // 元素 -> 编辑器实例。使用 WeakMap，DOM 被替换后自动回收
 const bpmnHosts = new WeakMap()
+
+// Activiti moddle 描述符(定义处理人、候选人等扩展属性)全局缓存一份
+async function loadActivitiDescriptor() {
+    if (bpmnAssets.descriptor) return bpmnAssets.descriptor
+    const response = await fetch('vendor/bpmn-js/activiti.json')
+    if (!response.ok) throw new Error('Activiti 属性描述符加载失败')
+    bpmnAssets.descriptor = await response.json()
+    return bpmnAssets.descriptor
+}
 
 function loadBpmnStyles() {
     if (bpmnAssets.cssLoaded) return
@@ -1540,11 +1563,12 @@ function bpmnEditorMarkup(options = {}) {
             </div>
             <div class="bpmn-pane" data-bpmn-pane="graph" ${mode === 'graph' ? '' : 'hidden'}>
                 <div class="bpmn-canvas" data-bpmn-canvas></div>
+                ${editable ? '<aside class="bpmn-props" data-bpmn-props></aside>' : ''}
             </div>
             <div class="bpmn-pane" data-bpmn-pane="xml" ${mode === 'xml' ? '' : 'hidden'}>
                 <textarea class="code-editor" data-bpmn-xml spellcheck="false" ${editable ? '' : 'readonly'}>${esc(xml)}</textarea>
             </div>
-            ${editable ? '<p class="form-hint">图形模式支持拖拽调整布局、增删节点与连线；处理人、表单、条件表达式等属性请在 XML 模式编辑。切换「图形 / XML」不会丢失修改，保存前请确认。</p>' : ''}
+            ${editable ? '<p class="form-hint">图形模式支持拖拽调整布局、增删节点与连线；选中节点或连线后可在右侧属性面板设置处理人、候选人、表单、条件表达式等。切换「图形 / XML」不会丢失修改，保存前请确认。</p>' : ''}
         </div>
     `
 }
@@ -1583,6 +1607,210 @@ function fitBpmn(host) {
     }
 }
 
+/* ---- 右侧属性面板 ---- */
+
+// 元素类型的中文名，用于属性面板标题
+const BPMN_TYPE_LABELS = {
+    'bpmn:Process': '流程',
+    'bpmn:UserTask': '用户任务',
+    'bpmn:ManualTask': '手工任务',
+    'bpmn:ServiceTask': '服务任务',
+    'bpmn:ScriptTask': '脚本任务',
+    'bpmn:BusinessRuleTask': '规则任务',
+    'bpmn:SendTask': '发送任务',
+    'bpmn:ReceiveTask': '接收任务',
+    'bpmn:CallActivity': '调用子流程',
+    'bpmn:SubProcess': '子流程',
+    'bpmn:StartEvent': '开始事件',
+    'bpmn:EndEvent': '结束事件',
+    'bpmn:IntermediateCatchEvent': '中间捕获事件',
+    'bpmn:IntermediateThrowEvent': '中间抛出事件',
+    'bpmn:BoundaryEvent': '边界事件',
+    'bpmn:ExclusiveGateway': '排他网关',
+    'bpmn:ParallelGateway': '并行网关',
+    'bpmn:InclusiveGateway': '包容网关',
+    'bpmn:EventBasedGateway': '事件网关',
+    'bpmn:SequenceFlow': '连线',
+    'bpmn:TextAnnotation': '文本注释',
+    'bpmn:Lane': '泳道'
+}
+
+function bpmnTypeLabel(bo) {
+    if (!bo || !bo.$type) return ''
+    return BPMN_TYPE_LABELS[bo.$type] || bo.$type.replace(/^bpmn:/, '')
+}
+
+// 按元素类型列出可编辑的 Activiti 扩展属性，key 即 moddle 属性名
+function bpmnPropFields(bo) {
+    if (!bo || typeof bo.$instanceOf !== 'function') return []
+    if (bo.$type === 'bpmn:SequenceFlow') {
+        return [
+            { key: 'name', label: '连线名称', kind: 'text' },
+            {
+                key: 'conditionExpression',
+                label: '条件表达式',
+                kind: 'code',
+                hint: '留空表示无条件，可使用 ${...} 形式引用流程变量',
+                placeholder: '${approved == true}'
+            }
+        ]
+    }
+    const fields = []
+    if (bo.$instanceOf('bpmn:FlowElement') || bo.$instanceOf('bpmn:Process')) {
+        fields.push({ key: 'name', label: '名称', kind: 'text' })
+    }
+    if (bo.$instanceOf('bpmn:UserTask')) {
+        fields.push(
+            { key: 'assignee', label: '处理人', kind: 'user', placeholder: '用户名，如 zhangsan' },
+            { key: 'candidateUsers', label: '候选人', kind: 'users', placeholder: '多个用户名用英文逗号分隔' },
+            { key: 'candidateGroups', label: '候选组', kind: 'text', placeholder: '多个组用英文逗号分隔' },
+            { key: 'dueDate', label: '到期时间', kind: 'text', placeholder: '如 2026-12-31T18:00:00' },
+            { key: 'priority', label: '优先级', kind: 'text', placeholder: '整数，默认 50' },
+            { key: 'formKey', label: '表单 Key', kind: 'text', placeholder: '关联的表单标识' }
+        )
+    } else if (bo.$instanceOf('bpmn:ServiceTask') || bo.$instanceOf('bpmn:BusinessRuleTask') || bo.$instanceOf('bpmn:SendTask')) {
+        fields.push(
+            { key: 'class', label: 'Java 类', kind: 'text', placeholder: 'com.example.MyDelegate' },
+            { key: 'delegateExpression', label: '委托表达式', kind: 'text', placeholder: '${myDelegate}' },
+            { key: 'expression', label: '表达式', kind: 'text', placeholder: '${myService.run()}' },
+            { key: 'resultVariable', label: '结果变量', kind: 'text', placeholder: '保存返回值的变量名' }
+        )
+    } else if (bo.$instanceOf('bpmn:ScriptTask')) {
+        fields.push(
+            { key: 'resultVariable', label: '结果变量', kind: 'text', placeholder: '保存脚本结果的变量名' },
+            { key: 'resource', label: '脚本资源', kind: 'text', placeholder: '流程资源路径' }
+        )
+    } else if (bo.$instanceOf('bpmn:StartEvent')) {
+        fields.push(
+            { key: 'initiator', label: '发起人变量', kind: 'text', placeholder: '记录发起人的变量名，如 initiator' },
+            { key: 'formKey', label: '表单 Key', kind: 'text', placeholder: '关联的表单标识' }
+        )
+    } else if (bo.$instanceOf('bpmn:Process')) {
+        fields.push(
+            { key: 'candidateStarterUsers', label: '候选发起人', kind: 'users', placeholder: '多个用户名用英文逗号分隔' },
+            { key: 'candidateStarterGroups', label: '候选发起组', kind: 'text', placeholder: '多个组用英文逗号分隔' },
+            { key: 'versionTag', label: '版本标签', kind: 'text' }
+        )
+    }
+    // 活动、网关、事件都支持异步执行
+    if (bo.$instanceOf('bpmn:Activity') || bo.$instanceOf('bpmn:Gateway') || bo.$instanceOf('bpmn:Event')) {
+        fields.push({ key: 'async', label: '异步执行', kind: 'bool', hint: '勾选后由作业执行器异步处理' })
+    }
+    return fields
+}
+
+function bpmnSelectedElements(host) {
+    if (!host || !host.instance) return []
+    try {
+        return host.instance.get('selection').get() || []
+    } catch (error) {
+        return []
+    }
+}
+
+function bpmnPropValue(bo, key) {
+    if (!bo) return ''
+    const value = typeof bo.get === 'function' ? bo.get(key) : bo[key]
+    if (value === null || value === undefined) return ''
+    if (key === 'conditionExpression') return value.body || ''
+    return value
+}
+
+// 处理人 / 候选人字段附上 sys_user 解析结果
+function bpmnPropHint(field, value) {
+    if (value === '' || value === null || value === undefined || value === false) return null
+    if (field.kind === 'user') {
+        const text = userHint(value)
+        return text ? { text: `当前解析：${text}`, warn: text.indexOf('未在') === 0 } : null
+    }
+    if (field.kind === 'users') {
+        const names = String(value).split(',').map((item) => item.trim()).filter(Boolean)
+        if (!names.length) return null
+        const missing = names.filter((name) => !state.userIndex.has(name))
+        return {
+            text: `当前解析：${names.map((name) => userLabel(name)).join('、')}`,
+            warn: missing.length > 0
+        }
+    }
+    return field.hint ? { text: field.hint, warn: false } : null
+}
+
+function bpmnPropFieldHtml(bo, field) {
+    const value = bpmnPropValue(bo, field.key)
+    const id = `bpmnProp-${field.key}`
+    const hint = bpmnPropHint(field, value)
+    const hintHtml = hint ? `<span class="bpmn-field-hint${hint.warn ? ' is-warn' : ''}">${esc(hint.text)}</span>` : ''
+
+    if (field.kind === 'bool') {
+        return `
+            <div class="bpmn-field bpmn-field-check">
+                <input type="checkbox" id="${id}" data-bpmn-prop="${esc(field.key)}" data-bpmn-kind="bool" ${value === true || value === 'true' ? 'checked' : ''}>
+                <label for="${id}">${esc(field.label)}</label>
+            </div>
+            ${hintHtml}
+        `
+    }
+    if (field.kind === 'code') {
+        return `
+            <div class="bpmn-field">
+                <label for="${id}">${esc(field.label)}</label>
+                <textarea id="${id}" spellcheck="false" data-bpmn-prop="${esc(field.key)}" data-bpmn-kind="code" placeholder="${esc(field.placeholder || '')}">${esc(String(value))}</textarea>
+                ${hintHtml}
+            </div>
+        `
+    }
+    const list = field.kind === 'user' || field.kind === 'users' ? ' list="userOptions"' : ''
+    return `
+        <div class="bpmn-field">
+            <label for="${id}">${esc(field.label)}</label>
+            <input type="text" id="${id}" value="${esc(String(value))}"${list} data-bpmn-prop="${esc(field.key)}" data-bpmn-kind="${esc(field.kind)}" placeholder="${esc(field.placeholder || '')}">
+            ${hintHtml}
+        </div>
+    `
+}
+
+function renderBpmnProps(host) {
+    if (!host || !host.editable) return
+    const propsEl = host.root.querySelector('[data-bpmn-props]')
+    if (!propsEl) return
+    const selected = bpmnSelectedElements(host)
+    if (!selected.length) {
+        propsEl.innerHTML = '<div class="bpmn-props-empty">点击图形中的节点或连线，在这里设置处理人、候选人、条件等属性。</div>'
+        return
+    }
+    const bo = selected[0].businessObject
+    const fields = bpmnPropFields(bo)
+    propsEl.innerHTML = `
+        <div class="bpmn-props-head">
+            <strong>${esc(bo.name || bo.id || '未命名')}</strong>
+            <span class="badge badge-slate">${esc(bpmnTypeLabel(bo))}</span>
+        </div>
+        <div class="bpmn-props-body">
+            ${fields.length
+                ? fields.map((field) => bpmnPropFieldHtml(bo, field)).join('')
+                : '<span class="bpmn-field-hint">该元素暂无可编辑的扩展属性，可切换到 XML 模式编辑。</span>'}
+            ${selected.length > 1 ? '<span class="bpmn-field-hint">已选择多个元素，这里只显示第一个。</span>' : ''}
+        </div>
+    `
+}
+
+function commitBpmnProp(host, key, kind, value) {
+    if (!host || !host.editable) return
+    const element = bpmnSelectedElements(host)[0]
+    if (!element) return
+    const modeling = host.instance.get('modeling')
+    if (key === 'conditionExpression') {
+        const moddle = host.instance.get('moddle')
+        modeling.updateProperties(element, {
+            conditionExpression: value ? moddle.create('bpmn:FormalExpression', { body: value }) : undefined
+        })
+        return
+    }
+    // 复选框取消勾选、文本框清空时传 undefined，让 moddle 移除该属性
+    const next = kind === 'bool' ? (value === true ? true : undefined) : (value === '' ? undefined : value)
+    modeling.updateProperties(element, { [key]: next })
+}
+
 function setBpmnModeUI(host, mode) {
     host.mode = mode
     host.root.querySelectorAll('[data-action="bpmn-mode"]').forEach((btn) => {
@@ -1593,7 +1821,18 @@ function setBpmnModeUI(host, mode) {
     })
     const fitBtn = host.root.querySelector('[data-action="bpmn-fit"]')
     if (fitBtn) fitBtn.hidden = mode !== 'graph'
-    if (mode === 'graph') fitBpmn(host)
+    if (mode === 'graph') {
+        // 图形面板可能刚从隐藏状态显示出来，先让 bpmn-js 重新测量容器尺寸
+        if (host.instance) {
+            try {
+                host.instance.get('canvas').resized()
+            } catch (error) {
+                console.warn('[BPMN] resize failed:', error)
+            }
+        }
+        fitBpmn(host)
+        renderBpmnProps(host)
+    }
 }
 
 async function bpmnCurrentXml(host) {
@@ -1611,13 +1850,16 @@ async function mountBpmnEditor(root, options = {}) {
     const xml = options.xml || ''
     const canvasEl = root.querySelector('[data-bpmn-canvas]')
     const textarea = root.querySelector('[data-bpmn-xml]')
+    // 初始模式以标记中的可见面板为准，避免与 state.detailDiagramMode 不一致
+    const visiblePane = Array.prototype.slice.call(root.querySelectorAll('[data-bpmn-pane]')).find((pane) => !pane.hidden)
+    const initialMode = visiblePane ? visiblePane.dataset.bpmnPane : 'graph'
 
     const host = {
         root,
         textarea,
         editable,
         instance: null,
-        mode: 'graph',
+        mode: initialMode,
         baseline: xml,
         exportedXml: '',
         dirty: false,
@@ -1631,17 +1873,39 @@ async function mountBpmnEditor(root, options = {}) {
     const Ctor = await loadBpmnBundle(editable ? 'modeler' : 'viewer')
     if (host.destroyed) return host
 
-    const instance = new Ctor({ container: canvasEl })
+    const instanceOptions = { container: canvasEl }
+    // 注入 Activiti 描述符后，assignee / candidateUsers 等成为一级属性，可被属性面板读写
+    if (editable) instanceOptions.moddleExtensions = { activiti: await loadActivitiDescriptor() }
+    if (host.destroyed) return host
+
+    const instance = new Ctor(instanceOptions)
     host.instance = instance
 
     if (editable) {
-        instance.on('commandStack.changed', () => setBpmnDirty(host, true))
+        instance.on('commandStack.changed', () => {
+            setBpmnDirty(host, true)
+            const propsEl = root.querySelector('[data-bpmn-props]')
+            // 面板里正在输入时不重绘，避免打断输入
+            if (!propsEl || !propsEl.contains(document.activeElement)) renderBpmnProps(host)
+        })
+        instance.on('selection.changed', () => renderBpmnProps(host))
         if (textarea) {
             textarea.addEventListener('input', () => {
                 // 与原始 XML 比较，改回原样时自动消除「未保存」标记
                 setBpmnDirty(host, textarea.value.trim() !== host.baseline.trim())
             })
         }
+    }
+
+    // 属性面板只处理 change 事件：文本在失焦或回车时提交，复选框点击即提交
+    const propsEl = root.querySelector('[data-bpmn-props]')
+    if (propsEl) {
+        propsEl.addEventListener('change', (event) => {
+            const input = event.target.closest('[data-bpmn-prop]')
+            if (!input) return
+            const kind = input.dataset.bpmnKind
+            commitBpmnProp(host, input.dataset.bpmnProp, kind, kind === 'bool' ? input.checked : input.value.trim())
+        })
     }
 
     try {
@@ -1654,7 +1918,8 @@ async function mountBpmnEditor(root, options = {}) {
         return host
     }
 
-    fitBpmn(host)
+    if (host.mode === 'graph') fitBpmn(host)
+    renderBpmnProps(host)
     return host
 }
 
@@ -1702,7 +1967,15 @@ async function resetBpmnHost(host) {
         host.textarea.value = host.baseline
         host.exportedXml = ''
         setBpmnDirty(host, false)
-        if (host.mode === 'graph') fitBpmn(host)
+        if (host.mode === 'graph') {
+            try {
+                host.instance.get('canvas').resized()
+            } catch (error) {
+                console.warn('[BPMN] resize failed:', error)
+            }
+            fitBpmn(host)
+        }
+        renderBpmnProps(host)
         toast('已恢复为最近一次保存的内容', 'info')
     } catch (error) {
         toast(`重置失败：${error.message}`, 'error')
@@ -2083,7 +2356,7 @@ const actions = {
         if (data && data.warnings) data.warnings.forEach((warning) => toast(warning, 'info'))
     },
 
-    /* ---- 抽屉标签 ---- */
+    /* ---- 详情弹窗标签 ---- */
     'drawer-tab': async (el) => {
         const nextTab = el.dataset.tab
         if (nextTab === state.detailTab) return
@@ -2380,6 +2653,7 @@ document.addEventListener('keydown', (event) => {
             closeDialog(null)
             return
         }
+        // 实例详情在层级上位于普通弹层之下，先关闭上层弹层，避免误关背后的详情
         if (!$('modalRoot').hidden) {
             Promise.resolve(actions['modal-close']()).catch(handleError)
             return
