@@ -52,6 +52,14 @@
                             <input type="text" id="connHost" placeholder="localhost">
                         </label>
                         <label class="field">
+                            <span>用户名</span>
+                            <input type="text" id="connUser" placeholder="root">
+                        </label>
+                        <label class="field">
+                            <span>密码</span>
+                            <input type="password" id="connPass" placeholder="数据库密码">
+                        </label>
+                        <label class="field">
                             <span>数据库</span>
                             <div class="field-inline">
                                 <select id="connDatabase" disabled>
@@ -59,14 +67,6 @@
                                 </select>
                                 <button type="button" class="btn btn-ghost btn-xs" data-action="conn-load-databases" title="重新获取数据库列表">刷新</button>
                             </div>
-                        </label>
-                        <label class="field">
-                            <span>用户名</span>
-                            <input type="text" id="connUser" placeholder="root">
-                        </label>
-                        <label class="field">
-                            <span>密码</span>
-                            <input type="password" id="connPass" placeholder="数据库密码">
                         </label>
                         <label class="field" id="schemaField" hidden>
                             <span>Schema</span>
