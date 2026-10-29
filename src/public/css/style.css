@@ -1276,7 +1276,6 @@ textarea {
     inset: 0;
     background: rgba(15, 23, 42, 0.46);
     backdrop-filter: blur(2px);
-    animation: fade-in 0.16s ease;
 }
 
 .drawer {
@@ -1284,18 +1283,12 @@ textarea {
     display: flex;
     flex-direction: column;
     width: 100%;
-    max-width: 1180px;
+    max-width: 1360px;
     height: min(880px, calc(100vh - 56px));
     background: var(--surface);
     border-radius: 16px;
     box-shadow: var(--shadow-lg);
-    animation: modal-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
     overflow: hidden;
-}
-
-@keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
 }
 
 .drawer-loading {
@@ -1837,7 +1830,6 @@ textarea {
     inset: 0;
     background: rgba(15, 23, 42, 0.46);
     backdrop-filter: blur(2px);
-    animation: fade-in 0.16s ease;
 }
 
 .modal {
@@ -1849,13 +1841,7 @@ textarea {
     background: var(--surface);
     border-radius: 16px;
     box-shadow: var(--shadow-lg);
-    animation: modal-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
     overflow: hidden;
-}
-
-@keyframes modal-in {
-    from { transform: translateY(10px) scale(0.99); opacity: 0; }
-    to { transform: translateY(0) scale(1); opacity: 1; }
 }
 
 .modal-sm { max-width: 470px; }
